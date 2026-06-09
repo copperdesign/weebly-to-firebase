@@ -12,7 +12,7 @@
  *      project, hosting site, live domain, github repo.
  *   2. Write package.json, firebase.json, .firebaserc, .gitignore,
  *      .gitattributes, README.md (skip if exists).
- *   3. Create src/{html,less,js,gfx,img}, public/assets/{css,js,img}, reference/.
+ *   3. Create src/{html,less,js,gfx}, public/assets/{css,js,gfx}, reference/.
  *   4. Optionally: run `convert`, run `crawl`, `git init` + initial commit.
  */
 
@@ -24,6 +24,7 @@ import { resolveTarget } from '../lib/target.mjs';
 import * as t from '../lib/templates.mjs';
 import { run as runConvert } from './convert.mjs';
 import { run as runCrawl } from './crawl.mjs';
+import { run as runPort } from './port.mjs';
 import { setupFirebaseProject } from '../lib/firebase.mjs';
 import { normalizeDomain } from '../lib/domain.mjs';
 
@@ -56,6 +57,24 @@ async function writeIfMissing(root, relPath, contents) {
   await fs.writeFile(filePath, contents);
   console.log(`  +    ${relPath}`);
   return true;
+}
+
+/**
+ * True when `reference/WeeblyExport/` (or the legacy `src/WeeblyExport/`)
+ * holds anything beyond the empty drop-target the scaffold creates. Used to
+ * suppress the convert prompt when there's nothing to convert — keeps the
+ * wizard's "wget is primary" framing honest.
+ */
+async function hasWeeblyExportContent(root) {
+  for (const rel of ['reference/WeeblyExport', 'src/WeeblyExport']) {
+    const full = path.join(root, rel);
+    if (!(await exists(full))) continue;
+    try {
+      const entries = await fs.readdir(full);
+      if (entries.length) return true;
+    } catch { /* unreadable — treat as empty */ }
+  }
+  return false;
 }
 
 function runCmd(cmd, args, cwd) {
@@ -107,12 +126,12 @@ async function buildConfig(root, flags, prior) {
     { default: prior.setupFirebase ?? false, value: flags.setupFirebase, autoAccept },
   );
 
-  console.log('\nMigration sources:\n');
+  console.log('\nLive site (primary source — wget mirror is the input):\n');
   // Strip any scheme + trailing slash so the cached value matches the
   // directory wget writes the mirror into (reference/<host>/). Same call
   // crawl/port use — keeps the round trip stable.
   const liveDomain = normalizeDomain(await ask(
-    'Live Weebly domain (for asset mirror; blank to skip)',
+    'Live Weebly domain (leave blank only if the site is already offline)',
     { default: prior.liveDomain || '', value: flags.liveDomain, autoAccept },
   ));
   const githubRepo = await ask(
@@ -147,8 +166,11 @@ async function scaffoldConfigFiles(root, cfg) {
 async function scaffoldDirectories(root) {
   console.log('\nScaffolding directories:');
   const dirs = [
-    'src/html', 'src/less', 'src/js', 'src/gfx', 'src/img',
-    'public/assets/css', 'public/assets/js', 'public/assets/img',
+    // src/gfx is the single bucket for graphics — deployable images AND
+    // design sources (PSD/AFD/etc.) live side by side. The .gitignore strips
+    // design-source extensions, leaving the deployable formats checked in.
+    'src/html', 'src/less', 'src/js', 'src/gfx',
+    'public/assets/css', 'public/assets/js', 'public/assets/gfx',
     // Empty reference/WeeblyExport is the agreed drop target so the user
     // sees where to unzip their Weebly theme export.
     'reference/WeeblyExport',
@@ -190,9 +212,13 @@ function printNextSteps(root, cfg) {
   console.log('  npm run build        # less + js → public/');
   console.log('  npm run deploy       # firebase hosting');
   if (cfg.liveDomain) {
-    console.log('\nRefresh the live-site mirror any time:');
-    console.log('  weebly-to-firebase crawl');
+    console.log('\nRefresh the live-site mirror or re-port any time:');
+    console.log('  w2f crawl            # refresh wget mirror (sitemap-seeded)');
+    console.log('  w2f port --all       # re-extract every page in the mirror');
+    console.log('  w2f port kontakt     # re-extract a single page');
   }
+  console.log('\nGot a Weebly theme export? Drop it into reference/WeeblyExport/ and:');
+  console.log('  w2f convert          # overlay cleaner LESS/JS source on top of the mirror dump');
   console.log('');
 }
 
@@ -227,20 +253,55 @@ export async function run(flags = {}) {
   // user can still finish setup by hand from the scaffolded .firebaserc.
   if (cfg.setupFirebase) await setupFirebaseProject(cfg);
 
-  if (!flags.skipConvert) {
-    const doConvert = await askYesNo(
-      '\nConvert Weebly assets now (reference/WeeblyExport → src/{less,js,html})?',
-      { default: true, autoAccept },
-    );
-    if (doConvert) await runConvert(subFlags);
-  }
-
+  // — Live site (primary): crawl → port-all —
+  //
+  // wget mirroring is the canonical input now. With a liveDomain set we
+  // offer crawl + port back-to-back so the project lands buildable from
+  // the wizard alone — no manual `w2f port` round.
+  let crawled = false;
   if (!flags.skipCrawl && cfg.liveDomain) {
     const doCrawl = await askYesNo(
-      `\nMirror ${cfg.liveDomain} into reference/ now?`,
+      `\nMirror ${cfg.liveDomain} into reference/ now (wget — primary source)?`,
       { default: true, autoAccept },
     );
-    if (doCrawl) await runCrawl({ ...subFlags, domain: cfg.liveDomain });
+    if (doCrawl) {
+      await runCrawl({ ...subFlags, domain: cfg.liveDomain });
+      crawled = true;
+    }
+  }
+
+  if (crawled && !flags.skipPort) {
+    const doPort = await askYesNo(
+      '\nPort every crawled page into src/html/ + dump CSS/fonts/images now?',
+      { default: true, autoAccept },
+    );
+    if (doPort) {
+      // Errors here (missing index page, unreadable mirror, etc.) shouldn't
+      // abort the wizard — the user can re-run `w2f port --all` after
+      // they've sorted out whatever wget left behind.
+      try { await runPort({ ...subFlags, all: true }, []); }
+      catch (err) { console.log(`\n  !  port failed: ${err.message}`); }
+    }
+  }
+
+  // — Optional WeeblyExport overlay —
+  //
+  // Only suggest convert when reference/WeeblyExport/ actually has content;
+  // an empty folder is the scaffold-created drop target, not a real source.
+  // Skip silently otherwise so the wizard doesn't push WeeblyExport on
+  // users who don't have one.
+  if (!flags.skipConvert) {
+    const hasExport = await hasWeeblyExportContent(root);
+    if (hasExport) {
+      const doConvert = await askYesNo(
+        '\nOverlay WeeblyExport theme onto src/{less,js,html} (cleaner LESS/JS source)?',
+        { default: true, autoAccept },
+      );
+      if (doConvert) await runConvert(subFlags);
+    } else if (crawled) {
+      console.log('\n(No Weebly theme export found — skipping convert overlay.');
+      console.log(' Drop one into reference/WeeblyExport/ and run `w2f convert` to overlay later.)');
+    }
   }
 
   if (!flags.skipGit) await maybeInitGit(root, cfg, autoAccept);

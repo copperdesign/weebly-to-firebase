@@ -1,7 +1,7 @@
 {
   "name": "weebly-to-firebase",
-  "version": "0.3.0",
-  "description": "CLI to scaffold a Firebase Hosting project from a Weebly theme export.",
+  "version": "0.4.0",
+  "description": "CLI to scaffold a Firebase Hosting project from a live Weebly site (wget-driven; optional theme-export overlay).",
   "type": "module",
   "private": true,
   "bin": {

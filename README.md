@@ -1,8 +1,11 @@
 # weebly-to-firebase
 
-CLI to scaffold a Firebase Hosting project from a Weebly theme export — with
-optional full-site mirror for asset/content porting. Zero deps (Node built-ins
-only; `wget` for the crawler).
+CLI to scaffold a Firebase Hosting project from a live Weebly site. The
+crawled mirror (`wget`) is the source of truth: HTML, CSS, images and fonts
+are pulled from it directly. An unzipped Weebly theme export is an
+**optional overlay** — drop one into `reference/WeeblyExport/` to upgrade
+the dumped CSS/JS with cleaner authored source (un-minified LESS, individual
+JS modules). Zero deps (Node built-ins only; `wget` for the crawler).
 
 ## Install
 
@@ -19,18 +22,7 @@ node "/Users/home/Work Files/Weebly-to-Firebase/cli.mjs" [command] [options]
 
 ## Quick start
 
-Drop a Weebly export into a fresh project folder:
-
-```
-<project-root>/
-  reference/
-    WeeblyExport/    # unzipped Weebly theme export
-```
-
-(Older projects scaffolded with `src/WeeblyExport/` keep working — `convert`
-falls back to that location.)
-
-Then from the project root:
+From an empty project folder:
 
 ```bash
 weebly-to-firebase            # interactive — prompts for everything
@@ -54,16 +46,27 @@ alias. Examples below use whichever reads more clearly in context.
 ## Typical workflow
 
 ```bash
-w2f                  # 1. scaffold + optional crawl + optional git init
-w2f port             # 2. extract index from the crawl mirror → src/html/index.html
-w2f port kontakt     # 3. … repeat per page
+w2f                  # 1. scaffold + crawl (wget mirror, seeded from sitemap.xml)
+w2f port --all       # 2. dump CSS + fonts + images + every page found in mirror
+# (optional) drop a Weebly theme export into reference/WeeblyExport/, then:
+w2f convert          # 3. overlay cleaner LESS/JS source files on top of the dump
 npm install          # 4. inside the scaffolded project
 npm run build        # 5. posthtml + less + js → public/
 npm run deploy       # 6. firebase hosting
 ```
 
-Between steps 2-3 and 5, clean up by hand in `src/html/` and `src/less/` —
+`port` can also run per-page (`w2f port kontakt`) when you'd rather pull
+pages in one at a time and hand-clean between each.
+
+Between steps 2–3 and 6, clean up by hand in `src/html/` and `src/less/` —
 `port` is a starter, not a finished port (see [port options](#port-options)).
+
+**`convert` is optional.** Without a WeeblyExport, `port` alone produces a
+buildable project: dumped `src/less/_w2f-*.less` files cover the styles,
+fonts land in `src/less/_fonts.less`, and images go to `public/assets/gfx/`.
+With a WeeblyExport present, `convert` overlays structured source files
+(`variables.less`, `_global.less`, individual JS modules) that override the
+dump rule-by-rule — progressively replace the `_w2f-*` files as you migrate.
 
 ## Commands
 
@@ -102,8 +105,9 @@ Run `weebly-to-firebase help <command>` for command-specific options.
 | `--live-domain <domain>`    | Live Weebly domain (for mirror) |
 | `--github-repo <owner/name>`| GitHub repo for the scaffolded project |
 | `--setup-firebase`          | Create Firebase project + hosting site via CLI (requires `firebase login`) |
-| `--skip-convert`            | Don't run the asset migration step |
-| `--skip-crawl`              | Don't run the live-site crawl |
+| `--skip-crawl`              | Don't run the live-site crawl (primary source) |
+| `--skip-port`               | Don't auto-port pages after crawl |
+| `--skip-convert`            | Don't offer the WeeblyExport overlay step |
 | `--skip-git`                | Don't init git |
 
 ### `convert` options
@@ -122,26 +126,57 @@ Run `weebly-to-firebase help <command>` for command-specific options.
 
 `crawl` also accepts a positional: `weebly-to-firebase crawl example.com`.
 
+The crawl is **seeded from `/sitemap.xml`** when reachable. Weebly's
+navigation is JS-rendered, so a recursive walk from the homepage alone
+typically misses most pages — feeding the sitemap's `<loc>` entries to
+wget as seeds catches them. Both bare and `www.` variants are accepted
+as in-scope so mixed internal links don't get dropped. wget prints the
+number of HTML files at the mirror root when it finishes so under-counts
+are visible immediately.
+
 ### `port` options
 
 | flag | meaning |
 | --- | --- |
 | `--domain <domain>` | Override the cached `liveDomain` (which mirror to read from) |
+| `--all`             | Port every `.html` file in the mirror; scaffold skeletons for unknown pages |
 | `--force`           | Replace partials and page main slot even if hand-edited |
 
 `port` also accepts a positional page name (default `index`):
 `weebly-to-firebase port kontakt`.
 
+With `--all`, the partials/global setup runs once against the index page,
+then every other `.html` file at the mirror root is ported in turn. Pages
+not already in `src/html/` (i.e. anything beyond convert's fixed list of
+`index`/`404`/`impressum`/`datenschutz`/`kontakt`) get a skeleton scaffolded
+automatically before their `<main>` block is extracted. Nested mirror
+directories (e.g. blog post folders) are skipped — port them by hand if
+needed.
+
 First run extracts `_meta.html`, `_nav.html`, `_footer.html` (partials are
 only written once — subsequent ports leave them alone unless `--force`).
 Each page run replaces the `<main>…</main>` slot in `src/html/<page>.html`
 with the extracted content. Referenced images are downloaded straight into
-`public/assets/img/` and URLs are rewritten to `/assets/img/<filename>`.
+`public/assets/gfx/` and URLs are rewritten to `/assets/gfx/<filename>`.
+Cache-buster query strings (`?1560895278`) and URL-encoded path noise
+(`%3F…`, `%20…`) are stripped from filenames so the disk stays clean.
 
-`port` also fetches the linked stylesheets from the page head (including
-external CDNs that `crawl` skips), harvests `@font-face` declarations,
-downloads the font files into `public/assets/fonts/`, and emits
-`src/less/_fonts.less` with the cleaned `@font-face` block.
+`port` fetches the linked stylesheets from the page head (including external
+CDNs that `crawl` skips):
+
+- **`@font-face` blocks** are harvested; font files downloaded into
+  `public/assets/fonts/`; `src/less/_fonts.less` written with the cleaned
+  block.
+- **Same-origin stylesheets** are dumped as `src/less/_w2f-<name>.less` so
+  the project builds without a WeeblyExport — `wget` is the source of
+  truth. `url(…)` references inside are rewritten to `/assets/gfx/<name>`
+  and the referenced images are downloaded too.
+
+After fonts, `port` rewrites `src/less/main.less` with the canonical import
+order (`variables` → `_fonts` → `_w2f-<dumps>` → `_resets` → `_global` →
+`_ui-kit` → …), pulling in only the files that actually exist in
+`src/less/`. The rewrite is gated on a `Generated by w2f` marker comment —
+hand-edited main.less files are left alone unless `--force` is set.
 
 The extraction is intentionally lossy — Weebly markup is full of inline
 tracking, render-blocking scripts, and CDN-bound stylesheets. The output is
@@ -160,12 +195,12 @@ a starter you clean up by hand, not a finished port.
   .weebly-migrate.json  # cached answers for re-runs (gitignored)
   src/
     html/   # pages + Sass-style `_*.html` partials → compiled to public/
-    less/   # → public/assets/css/
+    less/   # → public/assets/css/   (includes _w2f-*.less mirror dumps)
     js/     # → public/assets/js/
-    gfx/    # design sources (PSD/AFD; gitignored)
-    img/    # raw images
+    gfx/    # graphics — deployable images committed, design sources
+            # (PSD/AFD/etc.) sit alongside but are stripped by .gitignore
   public/
-    assets/{css,js,img}/
+    assets/{css,js,gfx,fonts}/
   reference/
     WeeblyExport/       # the original theme, moved out of src/
     <domain>/           # wget mirror of the live site (gitignored)
@@ -180,7 +215,8 @@ cache to `<target>/.weebly-migrate.json` and are offered as defaults next time.
 - **crawl** — wget's timestamp-aware `--mirror` mode skips unchanged files.
 - **port** — partials only written if still the skeleton TODO marker; page
   `<main>` slots replaced only while still the skeleton; image downloads skip
-  existing files in `public/assets/img/`. `--force` overrides all three.
+  existing files in `public/assets/gfx/`; `_w2f-*.less` dumps regenerate only
+  while the `Generated by w2f` marker is present. `--force` overrides all four.
 
 ## Prerequisites
 

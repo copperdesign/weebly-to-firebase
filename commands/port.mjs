@@ -31,6 +31,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { resolveTarget } from '../lib/target.mjs';
 import { normalizeDomain } from '../lib/domain.mjs';
+import {
+  composeMainImports,
+  dumpStylesheetName,
+  findUndefinedVariables,
+  MAIN_LESS_MARKER,
+  W2F_STUBS_NAME,
+} from '../lib/less.mjs';
+import { composeAppImports, APP_JS_MARKER } from '../lib/js.mjs';
+import { writeSkeletonHtml } from './convert.mjs';
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Extraction helpers
@@ -209,14 +218,37 @@ function isLocalishUrl(u) {
 }
 
 function isImageUrl(u) {
-  return /\.(?:png|jpe?g|gif|webp|avif|svg|ico)(?:\?|$)/i.test(u);
+  return /\.(?:png|jpe?g|gif|webp|avif|svg|ico)(?:\?|$|#|%3[Ff])/i.test(u);
 }
 
+/**
+ * Derive a clean local filename from a remote URL. Weebly URLs are full of
+ * noise we don't want on disk:
+ *   - cache-busting query strings (`?1560895278`)
+ *   - those same strings double-encoded in the HTML (`%3F1560895278`)
+ *   - URL-encoded path segments (`my%20file.png`)
+ *
+ * Strategy: pull the last path segment, decode it, then strip everything from
+ * the first `?` or `#` onward. The double-decode is what makes the encoded
+ * cache-buster case work — the encoded `%3F` becomes `?` after decode and
+ * gets stripped along with the rest.
+ *
+ * Returns null when the URL has no usable segment (root URL, malformed, etc.).
+ */
 function basenameFromUrl(rawUrl) {
   try {
     const u = new URL(rawUrl);
-    const seg = u.pathname.split('/').pop();
-    return decodeURIComponent(seg) || null;
+    const seg = u.pathname.split('/').filter(Boolean).pop();
+    if (!seg) return null;
+    // Decode percent-encoding once (handles %20 → space, %3F → ?).
+    let name;
+    try { name = decodeURIComponent(seg); } catch { name = seg; }
+    // Strip the cache-buster / fragment suffix that may now be present.
+    name = name.split(/[?#]/)[0].trim();
+    // A handful of Weebly URLs land with trailing dots or stray whitespace —
+    // both unsafe on macOS / lossy on some Firebase rewrites.
+    name = name.replace(/[\s.]+$/, '');
+    return name || null;
   } catch { return null; }
 }
 
@@ -246,11 +278,11 @@ async function downloadOne(url, destDir) {
 }
 
 /**
- * Walk all image-looking URLs in `html`, download each to `imgDir`, and
+ * Walk all image-looking URLs in `html`, download each to `gfxDir`, and
  * return the rewritten HTML. URLs we can't fetch are left untouched so the
  * user sees them in the source and can address them by hand.
  */
-async function rewriteAndDownloadAssets(html, imgDir) {
+async function rewriteAndDownloadAssets(html, gfxDir) {
   const downloads = new Map(); // original URL → local filename
   const collect = u => {
     if (isLocalishUrl(u)) return;
@@ -268,7 +300,7 @@ async function rewriteAndDownloadAssets(html, imgDir) {
 
   // 2. Download each unique URL.
   for (const url of downloads.keys()) {
-    const local = await downloadOne(url, imgDir);
+    const local = await downloadOne(url, gfxDir);
     if (local) downloads.set(url, local);
   }
   const ok = [...downloads.entries()].filter(([, v]) => v).length;
@@ -278,7 +310,7 @@ async function rewriteAndDownloadAssets(html, imgDir) {
   //    rewritten — leave broken ones visible.
   const rewriteOne = u => {
     const local = downloads.get(u);
-    return local ? `/assets/img/${local}` : u;
+    return local ? `/assets/gfx/${local}` : u;
   };
   let out = html
     .replace(URL_ATTR_RE, (_, pre, q, u) => `${pre}${q}${rewriteOne(u)}${q}`)
@@ -355,6 +387,276 @@ async function downloadFontsInFace(face, baseUrl, fontDir) {
     if (local) out = out.split(raw).join(`/assets/fonts/${local}`);
   }
   return out;
+}
+
+/**
+ * Find variables used by any LESS file but defined by none, and write
+ * `_w2f-undefined.less` with stub definitions so the LESS build doesn't
+ * fail with "undefined variable" errors. These are typically Weebly editor
+ * tokens (`@shade`, `@text`, …) that the static export references but
+ * never actually writes to disk.
+ *
+ * Each stub is initialized to `transparent` with a TODO comment naming the
+ * referencing files — visible enough on hover/background usage that the
+ * user notices, harmless enough not to crash on size/border properties.
+ */
+async function portUndefinedVariables(root, force) {
+  console.log('\n→ _w2f-undefined.less');
+  const lessDir = path.join(root, 'src/less');
+  if (!(await exists(lessDir))) {
+    console.log('  !  src/less/ missing — skipping');
+    return;
+  }
+  // Read every LESS file except the one we're about to write and main.less
+  // itself (main.less is just imports — including it would double-count).
+  const stubFilename = `${W2F_STUBS_NAME}.less`;
+  const filenames = (await fs.readdir(lessDir))
+    .filter(f => f.endsWith('.less') && f !== stubFilename && f !== 'main.less');
+  const files = await Promise.all(filenames.map(async name => ({
+    name,
+    content: await fs.readFile(path.join(lessDir, name), 'utf8'),
+  })));
+  const undef = findUndefinedVariables(files);
+  if (!undef.length) {
+    console.log('  ok all referenced variables are defined');
+    return;
+  }
+  const dest = path.join(lessDir, stubFilename);
+  if (await exists(dest) && !force) {
+    const existing = await fs.readFile(dest, 'utf8');
+    if (!MAIN_LESS_MARKER.test(existing)) {
+      console.log(`  skip src/less/${stubFilename} (hand-edited; use --force)`);
+      return;
+    }
+  }
+  // Build a `var → [referencing files]` map so each stub names its origin —
+  // makes "what value should this be?" answerable from the comment alone.
+  const refs = new Map(undef.map(v => [v, []]));
+  for (const { name, content } of files) {
+    for (const m of content.matchAll(/@([a-zA-Z_][\w-]*)\b/g)) {
+      if (refs.has(m[1]) && !refs.get(m[1]).includes(name)) refs.get(m[1]).push(name);
+    }
+  }
+  const stubs = undef.map(v => {
+    const where = refs.get(v).join(', ');
+    return `@${v}: transparent; // TODO: used in ${where}`;
+  }).join('\n');
+  const body = `// _w2f-undefined.less — Generated by w2f port.
+//
+// Stub definitions for variables that Weebly's static export references
+// but never defines (often editor-time tokens like @shade, @text). Each
+// is initialized to \`transparent\` so the LESS build succeeds; replace
+// with real values, ideally inside variables.less.
+//
+// Re-generated on every \`w2f port\` while this marker is present.
+
+${stubs}
+`;
+  await fs.writeFile(dest, body);
+  console.log(`  +    src/less/${stubFilename} (${undef.length} stub${undef.length === 1 ? '' : 's'}: ${undef.join(', ')})`);
+}
+
+/**
+ * Write src/js/app.js — side-effect imports of every JS file in src/js/ in
+ * the canonical order (plugins/vendor first, custom last). Mirrors the
+ * main.less story: hand-edited app.js survives subsequent ports unless
+ * `--force` is on. Order rules live in lib/js.mjs.
+ */
+async function portAppJs(root, force) {
+  console.log('\n→ app.js');
+  const jsDir = path.join(root, 'src/js');
+  if (!(await exists(jsDir))) {
+    console.log('  !  src/js/ missing — skipping app.js');
+    return;
+  }
+  const present = (await fs.readdir(jsDir)).filter(f => f.endsWith('.js'));
+  const dest = path.join(jsDir, 'app.js');
+  if (await exists(dest) && !force) {
+    const existing = await fs.readFile(dest, 'utf8');
+    if (!APP_JS_MARKER.test(existing)) {
+      console.log('  skip src/js/app.js (hand-edited; use --force)');
+      return;
+    }
+  }
+  const imports = composeAppImports(present);
+  if (!imports.length) {
+    console.log('  !  no JS files in src/js/ to import');
+    return;
+  }
+  const body = `// app.js — Generated by w2f port.
+//
+// Side-effect imports of the Weebly JS files in load order. Rollup inlines
+// each script into the IIFE bundle. Re-generated on every \`w2f port\`
+// while this marker is present; delete the comment block to lock the file
+// against further w2f rewrites.
+
+${imports.map(f => `import './${f}';`).join('\n')}
+`;
+  await fs.writeFile(dest, body);
+  console.log(`  +    src/js/app.js (${imports.length} imports)`);
+}
+
+/**
+ * Write src/less/main.less with the canonical import order — but only when
+ * either the file doesn't exist, was previously generated by w2f (marker
+ * present), or `--force` is on. Hand-edited main.less files survive
+ * subsequent ports.
+ *
+ * Composition rules live in lib/less.mjs so `convert` and `port` agree on
+ * what the canonical entry-point looks like.
+ */
+async function portMainLess(root, force) {
+  console.log('\n→ main.less');
+  const lessDir = path.join(root, 'src/less');
+  if (!(await exists(lessDir))) {
+    console.log('  !  src/less/ missing — skipping main.less');
+    return;
+  }
+  const present = new Set(
+    (await fs.readdir(lessDir)).filter(f => f.endsWith('.less')),
+  );
+  const dest = path.join(lessDir, 'main.less');
+  if (await exists(dest) && !force) {
+    const existing = await fs.readFile(dest, 'utf8');
+    if (!MAIN_LESS_MARKER.test(existing)) {
+      console.log('  skip src/less/main.less (hand-edited; use --force)');
+      return;
+    }
+  }
+  const imports = composeMainImports(present);
+  if (!imports.length) {
+    console.log('  !  no canonical LESS files found in src/less/');
+    return;
+  }
+  const lines = imports.map(name => `@import "${name}.less";`);
+  const body = `// main.less — Generated by w2f port.
+//
+// Imports every variables*.less variant present, then the canonical Weebly
+// LESS layer order. Re-generated on every \`w2f port\` while this marker is
+// present; delete the comment block to lock the file against future
+// w2f rewrites.
+
+${lines.join('\n')}
+`;
+  await fs.writeFile(dest, body);
+  console.log(`  +    src/less/main.less (${lines.length} imports)`);
+}
+
+/**
+ * Strip @font-face blocks from a CSS body — they're harvested into
+ * `_fonts.less` separately, no need to repeat them in the mirror dump.
+ */
+function stripFontFaces(css) {
+  return css.replace(/@font-face\s*\{[\s\S]*?\}\s*/gi, '');
+}
+
+/**
+ * Same-origin filter for "this is a real Weebly site stylesheet, dump it" vs
+ * "this is a CDN webfont sheet, leave it to portFonts." We dump only files
+ * whose URL host matches the user's live domain — CDN-served theme CSS lands
+ * in `convert`'s territory, and Google-Fonts-style sheets are exclusively
+ * font-face anyway.
+ */
+function isSameOriginCss(absUrl, host) {
+  try { return new URL(absUrl).host === host; } catch { return false; }
+}
+
+/**
+ * Rewrite `url(…)` references inside a dumped stylesheet body. Two transforms:
+ *
+ *   1. Image-extension URLs that we successfully downloaded get pointed at
+ *      `/assets/gfx/<name>`. Same rule as the HTML rewriter — broken/foreign
+ *      URLs stay visible.
+ *   2. Relative paths are resolved against the stylesheet's own URL (CSS
+ *      `url(...)` is relative to the .css file, not the host page).
+ *
+ * Font URLs are NOT touched here — they're already pulled into
+ * `public/assets/fonts/` by `portFonts`, and the @font-face blocks containing
+ * them are stripped out before this runs (see `stripFontFaces`).
+ */
+async function rewriteDumpCss(css, baseUrl, gfxDir) {
+  const map = new Map();
+  for (const m of css.matchAll(CSS_URL_RE)) {
+    const raw = m[2];
+    if (isLocalishUrl(raw) || !isImageUrl(raw)) continue;
+    let abs;
+    try { abs = new URL(raw, baseUrl).href; } catch { continue; }
+    if (!map.has(raw)) map.set(raw, abs);
+  }
+  const downloaded = new Map();
+  for (const [raw, abs] of map.entries()) {
+    const local = await downloadOne(abs, gfxDir);
+    if (local) downloaded.set(raw, local);
+  }
+  return css.replace(CSS_URL_RE, (_, q, u) => {
+    const local = downloaded.get(u);
+    return local ? `url(${q}/assets/gfx/${local}${q})` : `url(${q}${u}${q})`;
+  });
+}
+
+/**
+ * Pull every same-origin linked stylesheet from the page head, drop @font-face
+ * declarations (those go to _fonts.less), download any referenced images, and
+ * write the result to `src/less/_w2f-<basename>.less`.
+ *
+ * This is the "wget as source of truth" pillar: even without a WeeblyExport
+ * theme to crib LESS source files from, the project ends up with usable CSS
+ * after `port`. When the user *does* run `convert` later, the cleaner
+ * structured partials (`variables.less`, `_global.less`, …) compose AFTER
+ * the dump in main.less and override it rule-by-rule.
+ *
+ * Same-origin only — CDN-hosted theme sheets are usually webfont catalogs
+ * (handled by portFonts) and dragging them in as inline LESS adds nothing
+ * the build needs.
+ */
+async function portMirrorStyles(root, headHtml, baseUrl, gfxDir, force) {
+  console.log('\n→ _w2f-*.less (mirror stylesheets)');
+  const links = findLinkedStylesheets(headHtml);
+  if (!links.length) {
+    console.log('  !  no <link rel=stylesheet> in head');
+    return;
+  }
+  let host;
+  try { host = new URL(baseUrl).host; } catch { host = ''; }
+  const lessDir = path.join(root, 'src/less');
+  await fs.mkdir(lessDir, { recursive: true });
+
+  let dumped = 0;
+  for (const link of links) {
+    let absLink;
+    try { absLink = new URL(link, baseUrl).href; } catch { continue; }
+    if (!isSameOriginCss(absLink, host)) continue;
+    const css = await fetchText(absLink);
+    if (!css) continue;
+    const stripped = stripFontFaces(css).trim();
+    if (!stripped) continue; // sheet was pure @font-face
+    const name = dumpStylesheetName(absLink);
+    const dest = path.join(lessDir, `${name}.less`);
+    if (await exists(dest) && !force) {
+      const existing = await fs.readFile(dest, 'utf8');
+      if (!MAIN_LESS_MARKER.test(existing)) {
+        console.log(`  skip src/less/${name}.less (hand-edited; use --force)`);
+        continue;
+      }
+    }
+    const rewritten = await rewriteDumpCss(stripped, absLink, gfxDir);
+    const body = `// ${name}.less — Generated by w2f port from ${absLink}.
+//
+// Raw compiled CSS from the wget mirror. Imported between variables/stubs
+// and the canonical Weebly partials in main.less — structured partials (from
+// \`w2f convert\`, if you have a WeeblyExport) override rules in here.
+//
+// Progressively replace these rules with cleaner LESS source files and
+// shrink this file down. Re-generated on every \`w2f port\` while this
+// marker is present; delete the marker to lock the file.
+
+${rewritten}
+`;
+    await fs.writeFile(dest, body);
+    console.log(`  +    src/less/${name}.less (${Math.round(rewritten.length / 1024)} KB)`);
+    dumped++;
+  }
+  if (!dumped) console.log('  !  no same-origin stylesheets dumped');
 }
 
 /**
@@ -463,10 +765,130 @@ async function readJson(p, fallback = {}) {
   catch { return fallback; }
 }
 
+/**
+ * Walk the crawled mirror and return a sorted list of top-level page names
+ * (no extension, no subdirectories). Subdirs are skipped with a warning —
+ * Weebly's blog feature can produce nested URLs but they need bespoke
+ * handling and would otherwise pollute src/html/ with sibling files whose
+ * names collide. The user can port them by passing the explicit path.
+ *
+ * `index.html` always sorts first when present so partials get extracted
+ * from the homepage (typically the richest source of nav/footer markup).
+ */
+async function discoverPagesInMirror(mirrorDir) {
+  const entries = await fs.readdir(mirrorDir, { withFileTypes: true });
+  const pages = [];
+  const skippedDirs = [];
+  for (const e of entries) {
+    if (e.isDirectory()) {
+      skippedDirs.push(e.name);
+      continue;
+    }
+    if (!e.isFile()) continue;
+    if (!/\.html?$/i.test(e.name)) continue;
+    // Strip extension. wget's --adjust-extension may write .php.html /
+    // .asp.html — we just want the bare stem since that's our skeleton name.
+    const stem = e.name.replace(/\.html?$/i, '');
+    if (!stem) continue;
+    pages.push(stem);
+  }
+  if (skippedDirs.length) {
+    console.log(`  (skipping nested mirror dirs: ${skippedDirs.join(', ')} — port by hand if needed)`);
+  }
+  // index first, then alphabetical. Stable order keeps subsequent re-runs
+  // diff-clean in the user's terminal.
+  pages.sort((a, b) => {
+    if (a === 'index') return -1;
+    if (b === 'index') return 1;
+    return a.localeCompare(b);
+  });
+  return pages;
+}
+
+/**
+ * Run the once-per-mirror setup: harvest fonts, dump mirror CSS, scan for
+ * undefined LESS variables, regenerate main.less + app.js, and write the
+ * three shared partials (_meta, _nav, _footer). All gated on the marker /
+ * skeleton checks that already protect against clobbering hand-edits.
+ *
+ * Separated from per-page main extraction so `--all` can run this once
+ * (against the index page's head/nav/footer, which on Weebly is shared
+ * across every page) instead of re-fetching the same CSS for every page.
+ */
+async function portSetupFromIndex(root, html, baseUrl, gfxDir, force) {
+  const head = extractHead(html);
+  if (head) {
+    // Fonts first — uses the *unfiltered* head so external <link
+    // rel=stylesheet> tags are still discoverable before filterMetaHead
+    // strips them. Base URL is the user's live host so any relative
+    // stylesheet hrefs resolve correctly.
+    await portFonts(root, head, baseUrl, force);
+    // Same-origin stylesheets, dumped as LESS partials so the project is
+    // buildable even when the user hasn't dropped a WeeblyExport into
+    // reference/. composeMainImports picks them up automatically.
+    await portMirrorStyles(root, head, baseUrl, gfxDir, force);
+    // Undefined-variable stubs go on disk BEFORE main.less composes so the
+    // generated entry-point picks them up via composeMainImports().
+    await portUndefinedVariables(root, force);
+    await portMainLess(root, force);
+    await portAppJs(root, force);
+
+    console.log('\n→ _meta.html');
+    const filtered = filterMetaHead(head);
+    const withAssets = await rewriteAndDownloadAssets(filtered, gfxDir);
+    await writePartial(root, '_meta', withAssets, force);
+  } else {
+    console.log('  !  no <head> found in source');
+  }
+
+  const nav = extractNav(html);
+  if (nav) {
+    console.log('\n→ _nav.html');
+    const filtered = filterBodyChunk(nav);
+    const withAssets = await rewriteAndDownloadAssets(filtered, gfxDir);
+    await writePartial(root, '_nav', withAssets, force);
+  } else {
+    console.log('  !  no header/nav block found');
+  }
+
+  const footer = extractFooter(html);
+  if (footer) {
+    console.log('\n→ _footer.html');
+    const filtered = filterBodyChunk(footer);
+    const withAssets = await rewriteAndDownloadAssets(filtered, gfxDir);
+    await writePartial(root, '_footer', withAssets, force);
+  } else {
+    console.log('  !  no <footer> block found');
+  }
+}
+
+/**
+ * Extract a single page's <main> block and overwrite src/html/<page>.html's
+ * main slot. Falls back to scaffolding a skeleton when the page doesn't
+ * exist yet (`port --all` discovers pages not in convert's fixed list).
+ */
+async function portPageMain(root, domain, page, html, gfxDir, force) {
+  const main = extractMain(html);
+  if (!main) {
+    console.log(`  !  no <main> / content block found for ${page}`);
+    return;
+  }
+  const dest = path.join(root, 'src/html', `${page}.html`);
+  if (!(await exists(dest))) {
+    // Scaffold from the same template `convert` writes. Reference points at
+    // the mirror file so the porter knows what to compare against.
+    await writeSkeletonHtml(root, page, `reference/${domain}/${page}.html`);
+  }
+  console.log(`\n→ ${page}.html (main slot)`);
+  const filtered = filterBodyChunk(main);
+  const withAssets = await rewriteAndDownloadAssets(filtered, gfxDir);
+  await writePageMain(root, page, withAssets, force);
+}
+
 export async function run(flags = {}, positionals = []) {
   const root = resolveTarget(flags.target);
-  const page = positionals[0] || 'index';
   const force = !!flags.force;
+  const all = !!flags.all;
 
   // Resolve which crawled mirror to read. Flag wins, otherwise cache.
   // Normalize defensively — older caches may have stored the raw user input
@@ -478,63 +900,56 @@ export async function run(flags = {}, positionals = []) {
     throw new Error('No domain available. Pass --domain or run `init` first to cache one.');
   }
 
-  const sourcePath = path.join(root, 'reference', domain, `${page}.html`);
-  if (!(await exists(sourcePath))) {
-    throw new Error(`Crawled page not found: ${sourcePath}. Run \`w2f crawl ${domain}\` first.`);
+  const mirrorDir = path.join(root, 'reference', domain);
+  if (!(await exists(mirrorDir))) {
+    throw new Error(`Mirror not found: ${mirrorDir}. Run \`w2f crawl ${domain}\` first.`);
   }
 
-  console.log(`\nPorting ${page} from reference/${domain}/${page}.html`);
-  const html = await fs.readFile(sourcePath, 'utf8');
-  const imgDir = path.join(root, 'public/assets/img');
+  const gfxDir = path.join(root, 'public/assets/gfx');
+  const baseUrl = `https://${domain}/`;
 
-  // — Partials (only on first port; subsequent pages reuse them) —
-
-  const head = extractHead(html);
-  if (head) {
-    // Fonts first — uses the *unfiltered* head so external <link
-    // rel=stylesheet> tags are still discoverable before filterMetaHead
-    // strips them. Base URL is the user's live host so any relative
-    // stylesheet hrefs resolve correctly.
-    await portFonts(root, head, `https://${domain}/`, force);
-
-    console.log('\n→ _meta.html');
-    const filtered = filterMetaHead(head);
-    const withAssets = await rewriteAndDownloadAssets(filtered, imgDir);
-    await writePartial(root, '_meta', withAssets, force);
+  // — Decide the list of pages to port —
+  //
+  // --all walks the mirror and ports everything; otherwise honor the
+  // positional (default index). When --all is set, positionals are
+  // ignored — the user's already opted into "everything you can find."
+  let pages;
+  if (all) {
+    pages = await discoverPagesInMirror(mirrorDir);
+    if (!pages.length) {
+      throw new Error(`No .html files in ${mirrorDir}. Run \`w2f crawl ${domain}\` first.`);
+    }
+    console.log(`\nFound ${pages.length} page${pages.length === 1 ? '' : 's'} in reference/${domain}/: ${pages.join(', ')}`);
   } else {
-    console.log('  !  no <head> found in source');
+    pages = [positionals[0] || 'index'];
   }
 
-  const nav = extractNav(html);
-  if (nav) {
-    console.log('\n→ _nav.html');
-    const filtered = filterBodyChunk(nav);
-    const withAssets = await rewriteAndDownloadAssets(filtered, imgDir);
-    await writePartial(root, '_nav', withAssets, force);
-  } else {
-    console.log('  !  no header/nav block found');
+  // — One-time setup, sourced from the first page (typically index) —
+  //
+  // Nav/footer/head are shared across Weebly pages, so we extract them
+  // from one page and reuse for all. The single-page path also runs setup
+  // (gated by markers; no-op once the first port has landed).
+  const setupPage = pages[0];
+  const setupSourcePath = path.join(mirrorDir, `${setupPage}.html`);
+  if (!(await exists(setupSourcePath))) {
+    throw new Error(`Crawled page not found: ${setupSourcePath}.`);
   }
+  console.log(`\nPorting setup from reference/${domain}/${setupPage}.html`);
+  const setupHtml = await fs.readFile(setupSourcePath, 'utf8');
+  await portSetupFromIndex(root, setupHtml, baseUrl, gfxDir, force);
 
-  const footer = extractFooter(html);
-  if (footer) {
-    console.log('\n→ _footer.html');
-    const filtered = filterBodyChunk(footer);
-    const withAssets = await rewriteAndDownloadAssets(filtered, imgDir);
-    await writePartial(root, '_footer', withAssets, force);
-  } else {
-    console.log('  !  no <footer> block found');
-  }
-
-  // — Page main slot —
-
-  const main = extractMain(html);
-  if (main) {
-    console.log(`\n→ ${page}.html (main slot)`);
-    const filtered = filterBodyChunk(main);
-    const withAssets = await rewriteAndDownloadAssets(filtered, imgDir);
-    await writePageMain(root, page, withAssets, force);
-  } else {
-    console.log(`  !  no <main> / content block found for ${page}`);
+  // — Per-page main slot extraction —
+  //
+  // Includes the setup page itself, since portSetupFromIndex only wrote
+  // partials + global config, not the page's own <main>.
+  for (const page of pages) {
+    const sourcePath = path.join(mirrorDir, `${page}.html`);
+    if (!(await exists(sourcePath))) {
+      console.log(`  !  missing ${sourcePath} — skipping`);
+      continue;
+    }
+    const html = page === setupPage ? setupHtml : await fs.readFile(sourcePath, 'utf8');
+    await portPageMain(root, domain, page, html, gfxDir, force);
   }
 
   console.log('\nDone. Review src/html/, run `npm run build`, then `npm run dev`.');
