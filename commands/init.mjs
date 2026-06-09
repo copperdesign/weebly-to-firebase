@@ -123,6 +123,7 @@ async function scaffoldConfigFiles(root, cfg) {
   await writeIfMissing(root, 'package.json',    t.packageJson(cfg));
   await writeIfMissing(root, 'firebase.json',   t.firebaseJson(cfg));
   await writeIfMissing(root, '.firebaserc',     t.firebaseRc(cfg));
+  await writeIfMissing(root, '.posthtmlrc.js',  t.posthtmlrc());
   await writeIfMissing(root, '.gitignore',      t.gitignore());
   await writeIfMissing(root, '.gitattributes',  t.gitattributes());
   await writeIfMissing(root, 'README.md',       t.readme(cfg));

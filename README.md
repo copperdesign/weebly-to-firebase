@@ -89,7 +89,7 @@ Run `weebly-to-firebase help <command>` for command-specific options.
 | --- | --- |
 | `--skip-styles` | Skip copying LESS |
 | `--skip-js`     | Skip copying JS |
-| `--skip-kits`   | Skip generating `.kit` skeletons |
+| `--skip-html`   | Skip generating `.html` partial/page skeletons |
 | `--skip-move`   | Don't move `src/WeeblyExport` → `reference/` |
 
 ### `crawl` options
@@ -104,14 +104,15 @@ Run `weebly-to-firebase help <command>` for command-specific options.
 
 ```
 <project-root>/
-  package.json          # build:css (lessc), build:js (rollup), deploy
+  package.json          # build:html (posthtml), build:css (lessc), build:js (rollup), deploy
   firebase.json         # hosting only, cleanUrls, src/ + reference/ ignored
   .firebaserc           # default → <firebase-project>
+  .posthtmlrc.js        # posthtml-include config (root → src/html)
   .gitignore .gitattributes
   README.md
   .weebly-migrate.json  # cached answers for re-runs (gitignored)
   src/
-    html/   # CodeKit .kit partials → compiled to public/
+    html/   # pages + Sass-style `_*.html` partials → compiled to public/
     less/   # → public/assets/css/
     js/     # → public/assets/js/
     gfx/    # design sources (PSD/AFD; gitignored)
@@ -140,16 +141,22 @@ files; crawl uses wget's timestamp-aware mirror mode.
 
 - **CLI via `node:util.parseArgs`.** Built into Node 18+, zero deps. Subcommands
   are dispatched by dynamic `import('./commands/<name>.mjs')` — no registry.
-- **Why skeleton `.kit` files, not auto-converted partials.** Weebly partials
-  are Mustache (`{logo}`, `{{#sections}}`); CodeKit uses
-  `<!-- @include _head.kit -->`. A half-converted file misleads more than it
-  helps. Each skeleton names the Weebly file to port from.
+- **Why posthtml + posthtml-include instead of CodeKit `.kit`.** CLI-driven,
+  installed via `npm install` (no GUI dependency), and the include syntax
+  (`<include src="_meta.html"></include>`) is plain HTML — readable, no
+  template language to learn. Sass-style `_` prefix on partials lets the
+  build glob (`src/html/[!_]*.html`) pick up pages cleanly.
+- **Why skeleton `.html` files, not auto-converted partials.** Weebly partials
+  are Mustache (`{logo}`, `{{#sections}}`); posthtml-include is tag-based with
+  different semantics. A half-converted file misleads more than it helps. Each
+  skeleton names the Weebly file to port from.
 - **Why `reference/` is outside `src/`.** Clear mental separation: `src/` is
   the new source of truth, `reference/` is the corpus you read while porting.
   Gitignored (regenerate via `crawl`).
 - **Why `public/` is checked in.** Mirrors the Q42 / Katrin Fillies pattern:
-  CodeKit compiles `.kit` → `.html` locally; the compiled HTML is committed so
-  Firebase deploy doesn't need a build step in CI.
+  `npm run build:html` (posthtml) compiles `src/html/*.html` → `public/` locally;
+  the compiled HTML is committed so Firebase deploy doesn't need a build step
+  in CI.
 - **Why the tool lives outside the scaffolded project.** The project ships
   clean — no `scripts/` folder, no migration tooling in its repo. The tool
   stays useful for the next Weebly site you migrate.

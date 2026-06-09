@@ -4,16 +4,18 @@
  * What it does:
  *   - Copies WeeblyExport/styles/*.less    → src/less/
  *   - Copies WeeblyExport/assets/*.js      → src/js/
- *   - Generates skeleton `.kit` files in src/html/ matching the standard
- *     Q42-style pattern. Each skeleton references the Weebly source so
- *     porting is a copy-paste-port loop, not a guess.
+ *   - Generates skeleton `.html` files in src/html/ matching the standard
+ *     Q42-style pattern. Partials use the Sass-style `_` prefix
+ *     (`_meta.html`, `_nav.html`, etc.) and are composed via posthtml-include
+ *     (`<include src="_meta.html"></include>`). Each skeleton references the
+ *     Weebly source so porting is a copy-paste-port loop, not a guess.
  *   - Moves src/WeeblyExport → reference/WeeblyExport so `src/` becomes the
  *     new source of truth.
  *
  * Why skeletons instead of auto-converting partials:
- *   Weebly partials are Mustache (`{logo}`, `{{#sections}}…`), CodeKit `.kit`
- *   files use `<!-- @include _head.kit -->`. A half-converted file is worse
- *   than a clean skeleton with the reference one click away.
+ *   Weebly partials are Mustache (`{logo}`, `{{#sections}}…`) — different
+ *   semantics from posthtml-include's tag-based composition. A half-converted
+ *   file is worse than a clean skeleton with the reference one click away.
  *
  * Each step has a --skip-* flag to opt out individually.
  * Idempotent: skips files that already exist; never overwrites.
@@ -24,9 +26,13 @@ import path from 'node:path';
 import { askYesNo } from '../lib/prompt.mjs';
 import { resolveTarget } from '../lib/target.mjs';
 
-/** Standard page set, mirroring Q42's src/html/ shape. */
+/**
+ * Standard page set, mirroring Q42's src/html/ shape.
+ * Partials use the Sass-convention `_` prefix so the posthtml-cli build glob
+ * (`src/html/[!_]*.html`) can pick up pages while ignoring partials.
+ */
 const PAGES = ['index', '404', 'impressum', 'datenschutz', 'kontakt'];
-const PARTIALS = ['_head', '_nav', '_footer', '_gdpr'];
+const PARTIALS = ['_meta', '_nav', '_footer', '_gdpr'];
 
 async function exists(p) {
   try { await fs.access(p); return true; } catch { return false; }
@@ -66,40 +72,46 @@ async function copyTree(srcDir, destDir, filter, labelPrefix) {
 }
 
 /**
- * Write a starter .kit partial. The body is intentionally minimal — the
- * porter will paste from the referenced Weebly source. Each TODO names the
- * file to read.
+ * Write a starter .html partial or page. The body is intentionally minimal —
+ * the porter will paste from the referenced Weebly source. Each TODO names
+ * the file to read.
+ *
+ * Partials are detected by the Sass-style `_` prefix. Page templates compose
+ * partials via posthtml-include's `<include src="…"></include>` tag — resolved
+ * against `src/html/` per the project's `.posthtmlrc.js` config.
  */
-async function writeSkeletonKit(root, name, reference) {
-  const dest = path.join(root, 'src/html', `${name}.kit`);
+async function writeSkeletonHtml(root, name, reference) {
+  const dest = path.join(root, 'src/html', `${name}.html`);
   if (await exists(dest)) {
-    console.log(`  skip src/html/${name}.kit (exists)`);
+    console.log(`  skip src/html/${name}.html (exists)`);
     return;
   }
   const isPartial = name.startsWith('_');
   const body = isPartial
-    ? `<!-- ${name}.kit — partial -->
+    ? `<!-- ${name}.html — partial -->
 <!-- TODO: port from ${reference} -->
 `
-    : `<!-- ${name}.kit — page -->
+    : `<!-- ${name}.html — page -->
 <!DOCTYPE html>
 <html lang="de">
-<!-- @include _head.kit -->
+<head>
+  <include src="_meta.html"></include>
+</head>
 <body class="${name}-page">
-  <!-- @include _gdpr.kit -->
-  <!-- @include _nav.kit -->
+  <include src="_gdpr.html"></include>
+  <include src="_nav.html"></include>
 
   <main>
     <!-- TODO: port content from ${reference} -->
   </main>
 
-  <!-- @include _footer.kit -->
+  <include src="_footer.html"></include>
 </body>
 </html>
 `;
   await ensureDir(path.dirname(dest));
   await fs.writeFile(dest, body);
-  console.log(`  +    src/html/${name}.kit`);
+  console.log(`  +    src/html/${name}.html`);
 }
 
 /**
@@ -178,8 +190,8 @@ export async function run(flags = {}) {
     '  Copy WeeblyExport/styles/*.less → src/less/?', { default: true, autoAccept });
   const doJs = flags.skipJs ? false : await askYesNo(
     '  Copy WeeblyExport/assets/*.js   → src/js/?',   { default: true, autoAccept });
-  const doKits = flags.skipKits ? false : await askYesNo(
-    '  Generate starter .kit partials in src/html/?', { default: true, autoAccept });
+  const doHtml = flags.skipHtml ? false : await askYesNo(
+    '  Generate starter .html partials in src/html/?', { default: true, autoAccept });
   const doMove = flags.skipMove ? false : await askYesNo(
     '  Move src/WeeblyExport → reference/WeeblyExport when done?', { default: true, autoAccept });
 
@@ -204,20 +216,20 @@ export async function run(flags = {}) {
     );
   }
 
-  if (doKits) {
-    console.log('\n→ .kit skeletons');
+  if (doHtml) {
+    console.log('\n→ .html skeletons');
     for (const p of PARTIALS) {
       const ref = p === '_nav'    ? 'reference/WeeblyExport/partials/navigation/list.tpl'
                 : p === '_gdpr'   ? 'reference/WeeblyExport/styles/_gdpr.less + header.html'
-                : p === '_head'   ? 'reference/WeeblyExport/header.html (head block)'
+                : p === '_meta'   ? 'reference/WeeblyExport/header.html (head meta tags)'
                 :                   'reference/WeeblyExport/header.html (footer block)';
-      await writeSkeletonKit(root, p, ref);
+      await writeSkeletonHtml(root, p, ref);
     }
     for (const p of PAGES) {
       const ref = p === 'index'
         ? 'reference/WeeblyExport/header.html (body composition)'
         : `reference/WeeblyExport/no-header.html (use as base for ${p})`;
-      await writeSkeletonKit(root, p, ref);
+      await writeSkeletonHtml(root, p, ref);
     }
   }
 
