@@ -138,6 +138,11 @@ Each page run replaces the `<main>…</main>` slot in `src/html/<page>.html`
 with the extracted content. Referenced images are downloaded straight into
 `public/assets/img/` and URLs are rewritten to `/assets/img/<filename>`.
 
+`port` also fetches the linked stylesheets from the page head (including
+external CDNs that `crawl` skips), harvests `@font-face` declarations,
+downloads the font files into `public/assets/fonts/`, and emits
+`src/less/_fonts.less` with the cleaned `@font-face` block.
+
 The extraction is intentionally lossy — Weebly markup is full of inline
 tracking, render-blocking scripts, and CDN-bound stylesheets. The output is
 a starter you clean up by hand, not a finished port.

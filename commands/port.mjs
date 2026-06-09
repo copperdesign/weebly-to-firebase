@@ -101,8 +101,14 @@ function extractNav(html) {
   return tryEach(html, [
     h => extractTag(h, 'header'),
     h => extractTag(h, 'nav'),
+    // Weebly themes wrap the menu strip in <div class="nav-wrap"> sitting
+    // outside any semantic header — common enough to deserve an early hit.
+    h => extractByIdOrClass(h, 'nav-wrap'),
+    h => extractByIdOrClass(h, 'wsite-menu-wrap'),
     h => extractByIdOrClass(h, 'wsite-header-section'),
     h => extractByIdOrClass(h, 'wsite-header'),
+    h => extractByIdOrClass(h, 'main-nav'),
+    h => extractByIdOrClass(h, 'site-nav'),
     h => extractByIdOrClass(h, 'header'),
   ]);
 }
@@ -112,6 +118,7 @@ function extractFooter(html) {
     h => extractTag(h, 'footer'),
     h => extractByIdOrClass(h, 'wsite-footer-section'),
     h => extractByIdOrClass(h, 'wsite-footer'),
+    h => extractByIdOrClass(h, 'site-footer'),
     h => extractByIdOrClass(h, 'footer'),
   ]);
 }
@@ -287,6 +294,116 @@ async function rewriteAndDownloadAssets(html, imgDir) {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
+ * Font extraction
+ *
+ * Linked stylesheets in <head> often live on external CDNs (Weebly's own
+ * cdn1.editmysite.com, Google Fonts, …) and are NOT in the crawled mirror —
+ * `w2f crawl` runs wget with --domains locked to the user's host, and
+ * --page-requisites doesn't recursively follow @font-face url() inside
+ * CSS files either way. So we fetch the linked stylesheets live at port
+ * time, harvest @font-face declarations, download the actual font files
+ * into public/assets/fonts/, and emit src/less/_fonts.less for the LESS
+ * build to import.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+const FONT_EXT_RE = /\.(?:woff2?|ttf|otf|eot|svg)(?:\?|$)/i;
+const LINK_TAG_RE = /<link\b[^>]*?>/gi;
+
+async function fetchText(url) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) { console.log(`    ! ${url} → ${res.status}`); return null; }
+    return await res.text();
+  } catch (err) {
+    console.log(`    ! ${url} → ${err.message}`);
+    return null;
+  }
+}
+
+/** Pull href= from every <link rel=stylesheet>, regardless of attribute order. */
+function findLinkedStylesheets(headHtml) {
+  const urls = new Set();
+  for (const m of headHtml.matchAll(LINK_TAG_RE)) {
+    if (!/rel=["']?stylesheet["']?/i.test(m[0])) continue;
+    const href = m[0].match(/href=["']([^"']+)["']/i)?.[1];
+    if (href && !href.startsWith('data:')) urls.add(href);
+  }
+  return [...urls];
+}
+
+function extractFontFaces(cssText) {
+  return [...cssText.matchAll(/@font-face\s*\{[\s\S]*?\}/gi)].map(m => m[0]);
+}
+
+function findFontUrlsInFace(faceBlock, baseUrl) {
+  const out = [];
+  for (const m of faceBlock.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/gi)) {
+    const raw = m[1];
+    if (raw.startsWith('data:')) continue;
+    let absolute;
+    try { absolute = new URL(raw, baseUrl).href; } catch { continue; }
+    if (FONT_EXT_RE.test(absolute)) out.push({ raw, absolute });
+  }
+  return out;
+}
+
+/** Download every font URL referenced by `face` and rewrite to /assets/fonts/. */
+async function downloadFontsInFace(face, baseUrl, fontDir) {
+  let out = face;
+  for (const { raw, absolute } of findFontUrlsInFace(face, baseUrl)) {
+    const local = await downloadOne(absolute, fontDir);
+    if (local) out = out.split(raw).join(`/assets/fonts/${local}`);
+  }
+  return out;
+}
+
+/**
+ * Visit every linked stylesheet, harvest @font-face declarations, download
+ * the font files, and write the resulting block to src/less/_fonts.less.
+ * Skipped silently when no stylesheets / no @font-face show up — the user's
+ * site may not use webfonts at all.
+ */
+async function portFonts(root, headHtml, baseUrl, force) {
+  console.log('\n→ _fonts.less');
+  const links = findLinkedStylesheets(headHtml);
+  if (!links.length) {
+    console.log('  !  no <link rel=stylesheet> in head');
+    return;
+  }
+  const fontDir = path.join(root, 'public/assets/fonts');
+  const faces = [];
+  for (const link of links) {
+    let absLink;
+    try { absLink = new URL(link, baseUrl).href; } catch { continue; }
+    console.log(`  · ${absLink}`);
+    const css = await fetchText(absLink);
+    if (!css) continue;
+    const found = extractFontFaces(css);
+    if (!found.length) continue;
+    for (const face of found) faces.push(await downloadFontsInFace(face, absLink, fontDir));
+    console.log(`    ${found.length} @font-face`);
+  }
+  if (!faces.length) {
+    console.log('  !  no @font-face declarations harvested');
+    return;
+  }
+  const dest = path.join(root, 'src/less/_fonts.less');
+  if (await exists(dest) && !force) {
+    console.log('  skip src/less/_fonts.less (exists; use --force)');
+    return;
+  }
+  const body = `// _fonts.less — @font-face declarations ported by \`w2f port\`.
+// Font files downloaded into public/assets/fonts/.
+// Re-run with \`w2f port --force\` to refresh.
+
+${faces.join('\n\n')}
+`;
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  await fs.writeFile(dest, body);
+  console.log(`  +    src/less/_fonts.less (${faces.length} @font-face)`);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
  * File-writing helpers
  * ────────────────────────────────────────────────────────────────────────── */
 
@@ -374,6 +491,12 @@ export async function run(flags = {}, positionals = []) {
 
   const head = extractHead(html);
   if (head) {
+    // Fonts first — uses the *unfiltered* head so external <link
+    // rel=stylesheet> tags are still discoverable before filterMetaHead
+    // strips them. Base URL is the user's live host so any relative
+    // stylesheet hrefs resolve correctly.
+    await portFonts(root, head, `https://${domain}/`, force);
+
     console.log('\n→ _meta.html');
     const filtered = filterMetaHead(head);
     const withAssets = await rewriteAndDownloadAssets(filtered, imgDir);
