@@ -46,19 +46,29 @@ alias. Examples below use whichever reads more clearly in context.
 ## Typical workflow
 
 ```bash
-w2f                  # 1. scaffold + crawl (wget mirror, seeded from sitemap.xml)
-w2f port --all       # 2. dump CSS + fonts + images + every page found in mirror
-# (optional) drop a Weebly theme export into reference/WeeblyExport/, then:
-w2f convert          # 3. overlay cleaner LESS/JS source files on top of the dump
-npm install          # 4. inside the scaffolded project
-npm run build        # 5. posthtml + less + js → public/
-npm run deploy       # 6. firebase hosting
+w2f                  # 1. scaffold + crawl + port-all (one command, end to end)
+npm install          # 2. inside the scaffolded project
+npm run build        # 3. posthtml + less + js → public/
+npm run deploy       # 4. firebase hosting
 ```
 
-`port` can also run per-page (`w2f port kontakt`) when you'd rather pull
-pages in one at a time and hand-clean between each.
+After confirming the config at the "Proceed?" prompt, the wizard runs the
+whole pipeline automatically: scaffold → wget mirror (sitemap-seeded) →
+port every page + dump CSS/fonts/images → optional WeeblyExport overlay
+(only if `reference/WeeblyExport/` has content) → git init + initial
+commit. Opt out per step with `--skip-crawl`, `--skip-port`,
+`--skip-convert`, `--skip-git`.
 
-Between steps 2–3 and 6, clean up by hand in `src/html/` and `src/less/` —
+For re-runs / iteration:
+
+```bash
+w2f crawl            # refresh the wget mirror
+w2f port --all       # re-port every page in the mirror
+w2f port kontakt     # re-extract a single page (faster iteration on cleanup)
+w2f convert          # overlay a Weebly theme export dropped in later
+```
+
+Between build and deploy, clean up by hand in `src/html/` and `src/less/` —
 `port` is a starter, not a finished port (see [port options](#port-options)).
 
 **`convert` is optional.** Without a WeeblyExport, `port` alone produces a

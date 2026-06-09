@@ -142,7 +142,7 @@ async function buildConfig(root, flags, prior) {
   return { name, slug, description, firebaseProject, hostingSite, setupFirebase, liveDomain, githubRepo };
 }
 
-function printSummary(cfg) {
+function printSummary(cfg, flags) {
   console.log('\nSummary:');
   for (const [k, v] of Object.entries(cfg)) {
     // Booleans need their own rendering — `false || '(none)'` would otherwise
@@ -150,6 +150,23 @@ function printSummary(cfg) {
     const display = typeof v === 'boolean' ? (v ? 'yes' : 'no') : (v || '(none)');
     console.log(`  ${k.padEnd(16)} ${display}`);
   }
+  // Walk the same gates the runner walks so the preview matches reality —
+  // skip-flags suppress lines, no liveDomain hides the crawl/port pair, etc.
+  // Makes "Proceed?" a decision against a concrete plan rather than a leap.
+  console.log('\nPipeline (auto-runs on Proceed):');
+  let n = 1;
+  console.log(`  ${n++}. Scaffold config + directories`);
+  if (cfg.setupFirebase) console.log(`  ${n++}. Create Firebase project + hosting site via CLI`);
+  if (!flags.skipCrawl && cfg.liveDomain) {
+    console.log(`  ${n++}. Mirror ${cfg.liveDomain} with wget   [primary source]`);
+  }
+  if (!flags.skipPort && cfg.liveDomain && !flags.skipCrawl) {
+    console.log(`  ${n++}. Port every page → src/html/ + dump CSS/fonts/images`);
+  }
+  if (!flags.skipConvert) {
+    console.log(`  ${n++}. Overlay WeeblyExport theme           (only if reference/WeeblyExport/ has content)`);
+  }
+  if (!flags.skipGit) console.log(`  ${n++}. git init + initial commit`);
 }
 
 async function scaffoldConfigFiles(root, cfg) {
@@ -186,14 +203,18 @@ async function scaffoldDirectories(root) {
   }
 }
 
-async function maybeInitGit(root, cfg, autoAccept) {
+/**
+ * Initialize git + commit the scaffold. No prompt — the wizard's "Proceed?"
+ * step already gated the whole pipeline; asking again per sub-step is
+ * friction. Skip path is `--skip-git`. A pre-existing `.git/` short-circuits
+ * because committing into someone else's repo is a surprise.
+ */
+async function initGit(root, cfg) {
   if (await exists(path.join(root, '.git'))) {
-    console.log('\nGit repo already initialized.');
+    console.log('\nGit repo already initialized — skipping initial commit.');
     return;
   }
-  const proceed = await askYesNo('\nInitialize git repo with an initial commit?',
-    { default: true, autoAccept });
-  if (!proceed) return;
+  console.log('\nInitializing git repo…');
   await runCmd('git', ['init', '-b', 'main'], root);
   await runCmd('git', ['add', '.'], root);
   await runCmd('git', ['commit', '-m', `Initial scaffold (${cfg.name})`], root);
@@ -234,7 +255,7 @@ export async function run(flags = {}) {
   if (Object.keys(prior).length) console.log('(prior config found — values offered as defaults)');
 
   const cfg = await buildConfig(root, flags, prior);
-  printSummary(cfg);
+  printSummary(cfg, flags);
 
   if (!await askYesNo('\nProceed?', { default: true, autoAccept })) {
     console.log('Aborted.');
@@ -246,8 +267,11 @@ export async function run(flags = {}) {
   await fs.writeFile(configFile, JSON.stringify(cfg, null, 2) + '\n');
   console.log(`\n  +    .weebly-migrate.json (cache for re-runs)`);
 
-  // Pass through to sub-commands with the resolved root so they don't re-resolve.
-  const subFlags = { ...flags, target: root };
+  // Pass through to sub-commands with the resolved root so they don't
+  // re-resolve. Force `yes: true` so child commands don't re-prompt — the
+  // wizard's "Proceed?" step is the single go signal; each sub-step is
+  // already gated by an explicit `--skip-*` flag.
+  const subFlags = { ...flags, target: root, yes: true };
 
   // Firebase project + hosting site, opt-in. Failures are non-fatal — the
   // user can still finish setup by hand from the scaffolded .firebaserc.
@@ -255,55 +279,42 @@ export async function run(flags = {}) {
 
   // — Live site (primary): crawl → port-all —
   //
-  // wget mirroring is the canonical input now. With a liveDomain set we
-  // offer crawl + port back-to-back so the project lands buildable from
-  // the wizard alone — no manual `w2f port` round.
+  // wget mirroring is the canonical input. With a liveDomain set we crawl
+  // + port back-to-back automatically so the project lands buildable from
+  // the wizard alone — no manual round-trip. Opt out per step via
+  // --skip-crawl / --skip-port.
   let crawled = false;
   if (!flags.skipCrawl && cfg.liveDomain) {
-    const doCrawl = await askYesNo(
-      `\nMirror ${cfg.liveDomain} into reference/ now (wget — primary source)?`,
-      { default: true, autoAccept },
-    );
-    if (doCrawl) {
-      await runCrawl({ ...subFlags, domain: cfg.liveDomain });
-      crawled = true;
-    }
+    console.log(`\nMirroring ${cfg.liveDomain} into reference/ (wget — primary source)…`);
+    await runCrawl({ ...subFlags, domain: cfg.liveDomain });
+    crawled = true;
   }
 
   if (crawled && !flags.skipPort) {
-    const doPort = await askYesNo(
-      '\nPort every crawled page into src/html/ + dump CSS/fonts/images now?',
-      { default: true, autoAccept },
-    );
-    if (doPort) {
-      // Errors here (missing index page, unreadable mirror, etc.) shouldn't
-      // abort the wizard — the user can re-run `w2f port --all` after
-      // they've sorted out whatever wget left behind.
-      try { await runPort({ ...subFlags, all: true }, []); }
-      catch (err) { console.log(`\n  !  port failed: ${err.message}`); }
-    }
+    console.log('\nPorting every crawled page into src/html/ + dumping CSS/fonts/images…');
+    // Errors here (missing index page, unreadable mirror, etc.) shouldn't
+    // abort the wizard — the user can re-run `w2f port --all` after
+    // they've sorted out whatever wget left behind.
+    try { await runPort({ ...subFlags, all: true }, []); }
+    catch (err) { console.log(`\n  !  port failed: ${err.message}`); }
   }
 
   // — Optional WeeblyExport overlay —
   //
-  // Only suggest convert when reference/WeeblyExport/ actually has content;
-  // an empty folder is the scaffold-created drop target, not a real source.
-  // Skip silently otherwise so the wizard doesn't push WeeblyExport on
-  // users who don't have one.
+  // Auto-run when reference/WeeblyExport/ actually has content. An empty
+  // folder is the scaffold-created drop target, not a real source — skip
+  // silently in that case. Hard opt-out via --skip-convert.
   if (!flags.skipConvert) {
     const hasExport = await hasWeeblyExportContent(root);
     if (hasExport) {
-      const doConvert = await askYesNo(
-        '\nOverlay WeeblyExport theme onto src/{less,js,html} (cleaner LESS/JS source)?',
-        { default: true, autoAccept },
-      );
-      if (doConvert) await runConvert(subFlags);
+      console.log('\nOverlaying WeeblyExport theme onto src/{less,js,html} (cleaner LESS/JS source)…');
+      await runConvert(subFlags);
     } else if (crawled) {
       console.log('\n(No Weebly theme export found — skipping convert overlay.');
       console.log(' Drop one into reference/WeeblyExport/ and run `w2f convert` to overlay later.)');
     }
   }
 
-  if (!flags.skipGit) await maybeInitGit(root, cfg, autoAccept);
+  if (!flags.skipGit) await initGit(root, cfg);
   printNextSteps(root, cfg);
 }
