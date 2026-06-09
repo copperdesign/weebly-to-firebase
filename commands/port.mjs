@@ -130,18 +130,50 @@ function extractMain(html) {
  * ────────────────────────────────────────────────────────────────────────── */
 
 /**
+ * Remove visible Weebly attributions: the "Proudly powered by Weebly" link,
+ * any other anchor pointing to weebly.com, weebly tracking iframes/images,
+ * and meta tags whose content references Weebly's CDN. Wrappers left empty
+ * by the removal are collapsed in a single pass.
+ *
+ * Class names on the markup (e.g. `wsite-footer-credit`) are left alone —
+ * they're inert without Weebly's CSS, and the user may want them as
+ * porting landmarks.
+ */
+function stripWeeblyTraces(html) {
+  let out = html
+    // "Proudly powered by <a …>Weebly</a>" (including the trailing period)
+    .replace(/Proudly powered by\s*<a\b[\s\S]*?<\/a>\.?/gi, '')
+    // Any anchor whose href points at weebly.com / editmysite.com
+    .replace(/<a\b[^>]*?\b(?:weebly\.com|editmysite\.com)[^>]*?>[\s\S]*?<\/a>/gi, '')
+    // Tracking iframes / images on weebly CDNs
+    .replace(/<iframe\b[^>]*?\b(?:weebly\.com|editmysite\.com)[^>]*?>[\s\S]*?<\/iframe>/gi, '')
+    .replace(/<img\b[^>]*?\b(?:weebly\.com|editmysite\.com)[^>]*?\/?>/gi, '')
+    // Weebly-flavored meta tags (generator, og:site_name, twitter:image, …)
+    .replace(/<meta\b[^>]*?\b(?:weebly|editmysite)[^>]*?\/?>/gi, '');
+
+  // Collapse empty wrappers left behind. Loops so nested empties go too —
+  // a typical Weebly credit is <div class=wsite-footer-credit><p>…</p></div>,
+  // and a single pass would leave the outer div behind.
+  const emptyRe = /<(p|span|div)\b[^>]*>\s*<\/\1>/gi;
+  let prev;
+  do { prev = out; out = out.replace(emptyRe, ''); } while (out !== prev);
+  return out;
+}
+
+/**
  * Strip noise from the head block: scripts, tracking <noscript>, external
- * stylesheets. Keep semantic meta (charset, title, description, og:*) and
- * the language attribute. The build re-attaches our own CSS/JS via
- * package.json scripts, so dragging Weebly's link tags forward only hurts.
+ * stylesheets, plus Weebly-specific traces. Keep semantic meta (charset,
+ * title, description, og:*) and the language attribute. The build re-attaches
+ * our own CSS/JS via package.json scripts, so dragging Weebly's link tags
+ * forward only hurts.
  */
 function filterMetaHead(headHtml) {
-  return headHtml
+  return stripWeeblyTraces(headHtml
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '')
     .replace(/<link\b[^>]*rel=["']?stylesheet["']?[^>]*\/?>/gi, '')
     .replace(/<link\b[^>]*(?:editmysite|weebly|squarespace)[^>]*\/?>/gi, '')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ''))
     // collapse leftover empty lines
     .replace(/^\s*[\r\n]/gm, '')
     .trim();
@@ -149,9 +181,9 @@ function filterMetaHead(headHtml) {
 
 /** Same noise filter for body sections. */
 function filterBodyChunk(html) {
-  return html
+  return stripWeeblyTraces(html
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, ''))
     .trim();
 }
 
