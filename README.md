@@ -134,7 +134,7 @@ files; crawl uses wget's timestamp-aware mirror mode.
 ## Prerequisites
 
 - Node ≥ 18
-- `wget` for the crawler — `brew install wget`
+- `wget` for the crawler (auto-installed via brew by the `postinstall` hook on macOS; install manually elsewhere)
 - `firebase-tools` in the scaffolded project — `npm i -g firebase-tools`
 
 ## Design notes

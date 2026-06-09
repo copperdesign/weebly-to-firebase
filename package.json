@@ -8,6 +8,9 @@
     "weebly-to-firebase": "./cli.mjs",
     "w2f": "./cli.mjs"
   },
+  "scripts": {
+    "postinstall": "command -v wget >/dev/null 2>&1 || (command -v brew >/dev/null 2>&1 && brew install wget) || true"
+  },
   "engines": {
     "node": ">=18"
   },
