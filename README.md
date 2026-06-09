@@ -23,9 +23,12 @@ Drop a Weebly export into a fresh project folder:
 
 ```
 <project-root>/
-  src/
+  reference/
     WeeblyExport/    # unzipped Weebly theme export
 ```
+
+(Older projects scaffolded with `src/WeeblyExport/` keep working — `convert`
+falls back to that location.)
 
 Then from the project root:
 
@@ -110,7 +113,6 @@ Run `weebly-to-firebase help <command>` for command-specific options.
 | `--skip-styles` | Skip copying LESS |
 | `--skip-js`     | Skip copying JS |
 | `--skip-html`   | Skip generating `.html` partial/page skeletons |
-| `--skip-move`   | Don't move `src/WeeblyExport` → `reference/` |
 
 ### `crawl` options
 

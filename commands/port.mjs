@@ -30,6 +30,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { resolveTarget } from '../lib/target.mjs';
+import { normalizeDomain } from '../lib/domain.mjs';
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Extraction helpers
@@ -319,8 +320,11 @@ export async function run(flags = {}, positionals = []) {
   const force = !!flags.force;
 
   // Resolve which crawled mirror to read. Flag wins, otherwise cache.
+  // Normalize defensively — older caches may have stored the raw user input
+  // (with `https://` or a trailing slash), but wget writes the mirror into
+  // a directory named with just the bare host.
   const cached = await readJson(path.join(root, '.weebly-migrate.json'));
-  const domain = flags.domain || cached.liveDomain;
+  const domain = normalizeDomain(flags.domain || cached.liveDomain);
   if (!domain) {
     throw new Error('No domain available. Pass --domain or run `init` first to cache one.');
   }

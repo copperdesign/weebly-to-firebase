@@ -1,6 +1,7 @@
 /**
  * `weebly-to-firebase init` — scaffold a Firebase Hosting project from an
- * existing src/WeeblyExport/.
+ * existing reference/WeeblyExport/ (falls back to src/WeeblyExport/ for
+ * projects scaffolded under the older layout).
  *
  * Interactive by default; flag-driven when --yes or per-question flags are
  * provided. Idempotent: prior answers cached in <target>/.weebly-migrate.json
@@ -24,6 +25,7 @@ import * as t from '../lib/templates.mjs';
 import { run as runConvert } from './convert.mjs';
 import { run as runCrawl } from './crawl.mjs';
 import { setupFirebaseProject } from '../lib/firebase.mjs';
+import { normalizeDomain } from '../lib/domain.mjs';
 
 async function exists(p) {
   try { await fs.access(p); return true; } catch { return false; }
@@ -106,10 +108,13 @@ async function buildConfig(root, flags, prior) {
   );
 
   console.log('\nMigration sources:\n');
-  const liveDomain = await ask(
+  // Strip any scheme + trailing slash so the cached value matches the
+  // directory wget writes the mirror into (reference/<host>/). Same call
+  // crawl/port use — keeps the round trip stable.
+  const liveDomain = normalizeDomain(await ask(
     'Live Weebly domain (for asset mirror; blank to skip)',
     { default: prior.liveDomain || '', value: flags.liveDomain, autoAccept },
-  );
+  ));
   const githubRepo = await ask(
     'GitHub repo (owner/name; blank if not pushing yet)',
     { default: prior.githubRepo || '', value: flags.githubRepo, autoAccept },
@@ -144,7 +149,9 @@ async function scaffoldDirectories(root) {
   const dirs = [
     'src/html', 'src/less', 'src/js', 'src/gfx', 'src/img',
     'public/assets/css', 'public/assets/js', 'public/assets/img',
-    'reference',
+    // Empty reference/WeeblyExport is the agreed drop target so the user
+    // sees where to unzip their Weebly theme export.
+    'reference/WeeblyExport',
   ];
   for (const d of dirs) {
     const full = path.join(root, d);
@@ -222,7 +229,7 @@ export async function run(flags = {}) {
 
   if (!flags.skipConvert) {
     const doConvert = await askYesNo(
-      '\nConvert Weebly assets now (src/WeeblyExport → src/{less,js,html})?',
+      '\nConvert Weebly assets now (reference/WeeblyExport → src/{less,js,html})?',
       { default: true, autoAccept },
     );
     if (doConvert) await runConvert(subFlags);

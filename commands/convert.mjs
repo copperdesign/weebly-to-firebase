@@ -1,5 +1,5 @@
 /**
- * `weebly-to-firebase convert` — migrate src/WeeblyExport/ into the new layout.
+ * `weebly-to-firebase convert` — migrate reference/WeeblyExport/ into src/.
  *
  * What it does:
  *   - Copies WeeblyExport/styles/*.less    → src/less/
@@ -9,8 +9,10 @@
  *     (`_meta.html`, `_nav.html`, etc.) and are composed via posthtml-include
  *     (`<include src="_meta.html"></include>`). Each skeleton references the
  *     Weebly source so porting is a copy-paste-port loop, not a guess.
- *   - Moves src/WeeblyExport → reference/WeeblyExport so `src/` becomes the
- *     new source of truth.
+ *
+ * The export lives in `reference/WeeblyExport/` from the start — it's source
+ * material to read from, not project source. (Older projects scaffolded with
+ * `src/WeeblyExport/` still work: convert falls back to that location.)
  *
  * Why skeletons instead of auto-converting partials:
  *   Weebly partials are Mustache (`{logo}`, `{{#sections}}…`) — different
@@ -148,39 +150,21 @@ ${lines.join('\n')}
   console.log('  +    src/less/main.less');
 }
 
-/** Move src/WeeblyExport → reference/WeeblyExport. No-op if already moved. */
-async function moveWeeblyToReference(root) {
-  const fromPath = path.join(root, 'src/WeeblyExport');
-  const toPath = path.join(root, 'reference/WeeblyExport');
-  if (!(await exists(fromPath))) {
-    console.log('  (src/WeeblyExport already moved or absent)');
-    return;
-  }
-  if (await exists(toPath)) {
-    console.log('  reference/WeeblyExport already exists — leaving src/WeeblyExport in place.');
-    console.log('  Remove one of them manually if you want them merged.');
-    return;
-  }
-  await ensureDir(path.dirname(toPath));
-  await fs.rename(fromPath, toPath);
-  console.log('  moved src/WeeblyExport → reference/WeeblyExport');
-}
-
 export async function run(flags = {}) {
   const root = resolveTarget(flags.target);
   const autoAccept = !!flags.yes;
 
-  const weeblySrc = path.join(root, 'src/WeeblyExport');
   const weeblyRef = path.join(root, 'reference/WeeblyExport');
+  const weeblySrc = path.join(root, 'src/WeeblyExport');
 
-  if (!(await exists(weeblySrc)) && !(await exists(weeblyRef))) {
-    console.log(`No WeeblyExport found at src/WeeblyExport or reference/WeeblyExport (in ${root}) — nothing to convert.`);
+  if (!(await exists(weeblyRef)) && !(await exists(weeblySrc))) {
+    console.log(`No WeeblyExport found at reference/WeeblyExport or src/WeeblyExport (in ${root}) — nothing to convert.`);
     return;
   }
 
-  // The export may already have been moved on a prior run; copy from wherever
-  // it currently lives.
-  const sourceRoot = (await exists(weeblySrc)) ? weeblySrc : weeblyRef;
+  // reference/WeeblyExport is the canonical drop location; fall back to
+  // src/WeeblyExport for any project scaffolded under the old layout.
+  const sourceRoot = (await exists(weeblyRef)) ? weeblyRef : weeblySrc;
 
   console.log(`\nConvert Weebly assets in ${root}:`);
 
@@ -192,8 +176,6 @@ export async function run(flags = {}) {
     '  Copy WeeblyExport/assets/*.js   → src/js/?',   { default: true, autoAccept });
   const doHtml = flags.skipHtml ? false : await askYesNo(
     '  Generate starter .html partials in src/html/?', { default: true, autoAccept });
-  const doMove = flags.skipMove ? false : await askYesNo(
-    '  Move src/WeeblyExport → reference/WeeblyExport when done?', { default: true, autoAccept });
 
   if (doStyles) {
     console.log('\n→ LESS');
@@ -231,11 +213,6 @@ export async function run(flags = {}) {
         : `reference/WeeblyExport/no-header.html (use as base for ${p})`;
       await writeSkeletonHtml(root, p, ref);
     }
-  }
-
-  if (doMove) {
-    console.log('\n→ relocate');
-    await moveWeeblyToReference(root);
   }
 
   console.log('\nDone.');

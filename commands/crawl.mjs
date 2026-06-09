@@ -21,6 +21,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ask, askYesNo } from '../lib/prompt.mjs';
 import { resolveTarget } from '../lib/target.mjs';
+import { normalizeDomain as normalizeHost } from '../lib/domain.mjs';
 
 async function exists(p) {
   try { await fs.access(p); return true; } catch { return false; }
@@ -53,14 +54,12 @@ async function ensureWget() {
 /**
  * Normalize a domain input. Accepts any of:
  *   nele-quaas.com, www.nele-quaas.com, https://nele-quaas.com/, http://...
- * Returns { domain, url } where domain is bare (for --domains=) and url is
- * the full https://… root for wget to start from.
+ * Returns { domain, url } — `domain` is bare (matches the directory wget
+ * writes the mirror to), `url` is the https:// root wget starts crawling from.
  */
 function normalizeDomain(raw) {
-  let s = raw.trim();
-  s = s.replace(/^https?:\/\//, '');
-  s = s.replace(/\/+$/, '');
-  return { domain: s, url: `https://${s}/` };
+  const domain = normalizeHost(raw);
+  return { domain, url: `https://${domain}/` };
 }
 
 function runWget(args, cwd) {
