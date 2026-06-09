@@ -215,7 +215,10 @@ in order:
    no-op.
 3. `firebase functions:secrets:set HCAPTCHA_SECRET` — interactive: stdio is
    inherited so the firebase CLI's own paste prompt drives the flow. Never
-   pass the secret on argv (shell history would leak it).
+   pass the secret on argv (shell history would leak it). Auto-skipped when
+   stdin isn't a TTY (CI, piped runs, agent sessions) — the firebase prompt
+   would block forever with no one to type into it. Run it yourself from a
+   real terminal in that case.
 
 Preconditions for step 3: `firebase-tools` on PATH, `firebase login`, and
 the Blaze plan enabled on the project. Failures in any step are surfaced
@@ -283,7 +286,9 @@ Three steps, each independently skippable:
 2. Swap the hCaptcha test sitekey for your real one across every page in
    `src/html/` (no-op when no sitekey is passed)
 3. `firebase functions:secrets:set HCAPTCHA_SECRET` (interactive — pastes
-   into the firebase CLI's own prompt; never via argv)
+   into the firebase CLI's own prompt; never via argv). When stdin isn't a
+   TTY, step 3 auto-skips with a "run this yourself" message so
+   non-interactive callers (CI, agent sessions) don't hang on the prompt.
 
 Flags: `--sitekey <key>`, `--skip-install`, `--skip-secret`.
 
