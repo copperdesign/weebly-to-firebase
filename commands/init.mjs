@@ -23,6 +23,7 @@ import { resolveTarget } from '../lib/target.mjs';
 import * as t from '../lib/templates.mjs';
 import { run as runConvert } from './convert.mjs';
 import { run as runCrawl } from './crawl.mjs';
+import { setupFirebaseProject } from '../lib/firebase.mjs';
 
 async function exists(p) {
   try { await fs.access(p); return true; } catch { return false; }
@@ -97,6 +98,12 @@ async function buildConfig(root, flags, prior) {
     'Hosting site name (firebase.json hosting.site — blank for project default)',
     { default: prior.hostingSite || '', value: flags.hostingSite, autoAccept },
   );
+  // Opt-in: actually create the project + site via the firebase CLI after
+  // scaffolding. Requires `firebase login`; the helper detects + reports.
+  const setupFirebase = await askYesNo(
+    'Create the Firebase project + hosting site via CLI after scaffolding? (requires firebase login)',
+    { default: prior.setupFirebase ?? false, value: flags.setupFirebase, autoAccept },
+  );
 
   console.log('\nMigration sources:\n');
   const liveDomain = await ask(
@@ -108,13 +115,16 @@ async function buildConfig(root, flags, prior) {
     { default: prior.githubRepo || '', value: flags.githubRepo, autoAccept },
   );
 
-  return { name, slug, description, firebaseProject, hostingSite, liveDomain, githubRepo };
+  return { name, slug, description, firebaseProject, hostingSite, setupFirebase, liveDomain, githubRepo };
 }
 
 function printSummary(cfg) {
   console.log('\nSummary:');
   for (const [k, v] of Object.entries(cfg)) {
-    console.log(`  ${k.padEnd(16)} ${v || '(none)'}`);
+    // Booleans need their own rendering — `false || '(none)'` would otherwise
+    // print "(none)" for an intentional "no".
+    const display = typeof v === 'boolean' ? (v ? 'yes' : 'no') : (v || '(none)');
+    console.log(`  ${k.padEnd(16)} ${display}`);
   }
 }
 
@@ -205,6 +215,10 @@ export async function run(flags = {}) {
 
   // Pass through to sub-commands with the resolved root so they don't re-resolve.
   const subFlags = { ...flags, target: root };
+
+  // Firebase project + hosting site, opt-in. Failures are non-fatal — the
+  // user can still finish setup by hand from the scaffolded .firebaserc.
+  if (cfg.setupFirebase) await setupFirebaseProject(cfg);
 
   if (!flags.skipConvert) {
     const doConvert = await askYesNo(

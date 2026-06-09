@@ -79,6 +79,7 @@ Run `weebly-to-firebase help <command>` for command-specific options.
 | `--hosting-site <name>`     | `firebase.json` `hosting.site` |
 | `--live-domain <domain>`    | Live Weebly domain (for mirror) |
 | `--github-repo <owner/name>`| GitHub repo for the scaffolded project |
+| `--setup-firebase`          | Create Firebase project + hosting site via CLI (requires `firebase login`) |
 | `--skip-convert`            | Don't run the asset migration step |
 | `--skip-crawl`              | Don't run the live-site crawl |
 | `--skip-git`                | Don't init git |
