@@ -41,8 +41,12 @@ w2f init --yes \
   --firebase-project nele-quaas-web \
   --hosting-site nele-quaas \
   --live-domain nele-quaas.com \
-  --github-repo copperdesign/website-nelequaas
+  --github-repo copperdesign/website-nelequaas \
+  --setup-firebase   # create the Firebase project + hosting site via CLI
 ```
+
+`weebly-to-firebase` and `w2f` are the same binary — `w2f` is just the short
+alias. Examples below use whichever reads more clearly in context.
 
 ## Commands
 
@@ -53,6 +57,7 @@ Commands:
   init       Scaffold project (default if no command given)
   convert    Migrate WeeblyExport assets into src/{less,js,html}
   crawl      Mirror the live Weebly site into reference/
+  port       First-pass extract from crawled mirror → src/html/ + public/assets/img/
   help [cmd] Show help (or help for a specific command)
   version    Print version
 ```
@@ -100,6 +105,26 @@ Run `weebly-to-firebase help <command>` for command-specific options.
 | `--domain <domain>` | Domain to mirror (overrides cached config) |
 
 `crawl` also accepts a positional: `weebly-to-firebase crawl example.com`.
+
+### `port` options
+
+| flag | meaning |
+| --- | --- |
+| `--domain <domain>` | Override the cached `liveDomain` (which mirror to read from) |
+| `--force`           | Replace partials and page main slot even if hand-edited |
+
+`port` also accepts a positional page name (default `index`):
+`weebly-to-firebase port kontakt`.
+
+First run extracts `_meta.html`, `_nav.html`, `_footer.html` (partials are
+only written once — subsequent ports leave them alone unless `--force`).
+Each page run replaces the `<main>…</main>` slot in `src/html/<page>.html`
+with the extracted content. Referenced images are downloaded straight into
+`public/assets/img/` and URLs are rewritten to `/assets/img/<filename>`.
+
+The extraction is intentionally lossy — Weebly markup is full of inline
+tracking, render-blocking scripts, and CDN-bound stylesheets. The output is
+a starter you clean up by hand, not a finished port.
 
 ## What it scaffolds
 
@@ -167,12 +192,14 @@ files; crawl uses wget's timestamp-aware mirror mode.
 ```
 cli.mjs                  entry point (bin → weebly-to-firebase, w2f)
 commands/
-  init.mjs               scaffold + orchestrate convert/crawl/git
+  init.mjs               scaffold + orchestrate firebase/convert/crawl/git
   convert.mjs            WeeblyExport assets → src/
   crawl.mjs              wget --mirror of the live site
+  port.mjs               extract sections from crawled HTML → src/html/ + public/assets/img/
 lib/
   args.mjs               parseArgs wrapper + help text
   prompt.mjs             readline wrapper (ask / askYesNo / askValid)
   target.mjs             resolve project root from --target / cwd
   templates.mjs          file generators for the scaffolded project
+  firebase.mjs           `firebase` CLI driver for --setup-firebase
 ```
