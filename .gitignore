@@ -5,3 +5,10 @@ node_modules/
 .vscode/
 .env
 .env.local
+
+# Local QA scratch — visual comparison screenshots from manual checks
+# against the live/local builds, plus the playwright MCP working dir.
+# Only the repo root is ignored so genuine PNG assets under public/ etc.
+# still commit normally.
+/*.png
+.playwright-mcp/
