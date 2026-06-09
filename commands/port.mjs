@@ -93,6 +93,26 @@ function extractByIdOrClass(html, name) {
   return null;
 }
 
+/**
+ * Like extractByIdOrClass, but returns the full `<tag class="name">…</tag>`
+ * including the wrapping element. Necessary when the surrounding stylesheet
+ * scopes rules to that class — e.g. Weebly's theme defines
+ * `.banner-wrap .container { max-width: 1366px; padding: 60px 40px; }`,
+ * so capturing the *inner* HTML of `.banner-wrap` and dropping it raw into
+ * `<main>` loses the `.container` constraint entirely.
+ */
+function extractElement(html, name) {
+  const inner = extractByIdOrClass(html, name);
+  if (inner === null) return null;
+  const openRe = new RegExp(
+    `<(\\w+)\\b[^>]*(?:id=["']${name}["']|class=["'][^"']*\\b${name}\\b[^"']*["'])[^>]*>`,
+    'i',
+  );
+  const m = html.match(openRe);
+  if (!m) return null;
+  return `${m[0]}${inner}</${m[1]}>`;
+}
+
 /** Try several selectors in order; first hit wins. */
 function tryEach(html, attempts) {
   for (const fn of attempts) {
@@ -110,9 +130,12 @@ function extractNav(html) {
   return tryEach(html, [
     h => extractTag(h, 'header'),
     h => extractTag(h, 'nav'),
-    // Weebly themes wrap the menu strip in <div class="nav-wrap"> sitting
-    // outside any semantic header — common enough to deserve an early hit.
-    h => extractByIdOrClass(h, 'nav-wrap'),
+    // unite-header is the Weebly Unite theme's outer chrome wrapper —
+    // scoping rules like `.unite-header .container { … }` only match when
+    // the wrapper class survives, so use extractElement (full open+close)
+    // rather than inner-only extraction.
+    h => extractElement(h, 'unite-header'),
+    h => extractElement(h, 'nav-wrap'),
     h => extractByIdOrClass(h, 'wsite-menu-wrap'),
     h => extractByIdOrClass(h, 'wsite-header-section'),
     h => extractByIdOrClass(h, 'wsite-header'),
@@ -132,7 +155,33 @@ function extractFooter(html) {
   ]);
 }
 
+/**
+ * Body content for the page's `<main>` slot. Weebly's typical body shape is
+ * a series of sibling wraps:
+ *
+ *   <div class="nav-wrap">   …menu…
+ *   <div class="banner-wrap">  …hero with background-image…
+ *   <div class="main-wrap">    <div id="wsite-content"> …sections…
+ *   <div class="footer">     …footer…
+ *
+ * Extracting just `wsite-content` (or `main-wrap`) drops the hero section
+ * entirely — the assets land on disk but nothing references them. Capture
+ * `banner-wrap` separately and prepend it so the hero becomes the first
+ * block inside the page's <main>. The hero isn't strictly "main content"
+ * semantically, but keeping it adjacent to the rest of the page-body
+ * markup is the least invasive way to preserve the live layout without
+ * inventing a new partial.
+ */
 function extractMain(html) {
+  // Prefer the full wrapper elements (banner-wrap, main-wrap) — Weebly's
+  // theme CSS scopes layout rules to those parent classes. Stripping them
+  // loses container max-width / padding / cascade entirely.
+  const banner = extractElement(html, 'banner-wrap');
+  const mainWrap = extractElement(html, 'main-wrap');
+  if (banner || mainWrap) {
+    return [banner, mainWrap].filter(Boolean).join('\n');
+  }
+  // Fallback: themes that don't use the banner-wrap / main-wrap shape.
   return tryEach(html, [
     h => extractTag(h, 'main'),
     h => extractByIdOrClass(h, 'wsite-content'),
@@ -167,10 +216,19 @@ function stripWeeblyTraces(html) {
     // Weebly-flavored meta tags (generator, og:site_name, twitter:image, …)
     .replace(/<meta\b[^>]*?\b(?:weebly|editmysite)[^>]*?\/?>/gi, '');
 
-  // Collapse empty wrappers left behind. Loops so nested empties go too —
-  // a typical Weebly credit is <div class=wsite-footer-credit><p>…</p></div>,
-  // and a single pass would leave the outer div behind.
-  const emptyRe = /<(p|span|div)\b[^>]*>\s*<\/\1>/gi;
+  // Collapse empty wrappers left behind. Only attribute-less tags get
+  // collapsed — the typical Weebly credit residue is `<p></p>` (no class,
+  // no style) left after stripping `<a>Weebly</a>`. Any p/span/div with
+  // a `class=` or `style=` attribute is kept: Weebly's layout depends on
+  // empty class-bearing wrappers like `.banner-wrap .container .banner
+  // .wsite-section-elements`, and the hero `<div style="background-image:
+  // url(…)">` shows the photo via its inline style. Either kind of
+  // attribute makes the element load-bearing and we leave it alone.
+  //
+  // The class-bearing wsite-footer-credit wrapper that originally inspired
+  // this loop survives this stricter rule, but it's invisible without
+  // content so it doesn't hurt anything visually.
+  const emptyRe = /<(p|span|div)\s*>\s*<\/\1>/gi;
   let prev;
   do { prev = out; out = out.replace(emptyRe, ''); } while (out !== prev);
   return out;
@@ -223,6 +281,31 @@ function filterBodyChunk(html) {
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, ''))
     .trim();
+}
+
+/**
+ * Weebly's nav uses `id="active"` to mark the current page's `<li>`, but
+ * the runtime JS (which we strip) is what actually appends the `active`
+ * keyword to the class attribute — and the underline CSS rule is
+ * `.nav li.active > a:after`, scoped to the class, not the id. Without
+ * runtime, the active item renders inert.
+ *
+ * Promote the id to a class so the styling lands at build time. Caveat:
+ * this only marks the page whose source we extracted nav from (the index
+ * by default), so on every page the same nav item appears highlighted —
+ * fine for a single-page site, a starter-baseline for multi-page ones.
+ */
+function promoteActiveIdToClass(html) {
+  return html.replace(
+    /<li\b([^>]*?)\bid=["']active["']([^>]*?)class=["']([^"']*?)["']/gi,
+    (_, pre, mid, cls) =>
+      `<li${pre}id="active"${mid}class="${cls.trim()} active"`,
+  ).replace(
+    // Class-attribute may appear *before* the id; handle that ordering too.
+    /<li\b([^>]*?)\bclass=["']([^"']*?)["']([^>]*?)\bid=["']active["']/gi,
+    (_, pre, cls, mid) =>
+      `<li${pre}class="${cls.trim()} active"${mid}id="active"`,
+  );
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -852,15 +935,27 @@ async function writePageMain(root, page, mainHtml, force) {
     return;
   }
   const mainBlock = `<main>\n    ${mainHtml.trim().replace(/\n/g, '\n    ')}\n  </main>`;
-  const next = skeleton.replace(/<main\b[^>]*>[\s\S]*?<\/main>/i, mainBlock);
-  if (next === skeleton) {
+  // Detect the existing <main>…</main> directly so we can:
+  //   (a) tell "no <main> in skeleton" apart from "replacement is identical
+  //       to existing content" — both yielded `next === skeleton` and a
+  //       misleading "no <main> block to fill" warning before.
+  //   (b) refuse to clobber hand-edits without needing a second regex run.
+  // Also: use a replacement *function* (not a string) so `$`-bearing
+  // content (Weebly's source has a few) isn't accidentally interpreted as
+  // `$&`/`$1`/etc. by String.prototype.replace's special-token expansion.
+  const mainMatch = skeleton.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
+  if (!mainMatch) {
     console.log(`  !  src/html/${page}.html has no <main> block to fill`);
     return;
   }
-  // Refuse to clobber a non-skeleton main unless forced.
-  const currentMain = skeleton.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i)?.[1] ?? '';
+  const currentMain = mainMatch[1];
   if (!isSkeleton(currentMain) && !force) {
     console.log(`  skip src/html/${page}.html main (hand-edited; use --force)`);
+    return;
+  }
+  const next = skeleton.replace(/<main\b[^>]*>[\s\S]*?<\/main>/i, () => mainBlock);
+  if (next === skeleton) {
+    console.log(`  ·  src/html/${page}.html main already current — no change`);
     return;
   }
   await fs.writeFile(dest, next);
@@ -960,7 +1055,7 @@ async function portSetupFromIndex(root, html, baseUrl, gfxDir, force) {
   const nav = extractNav(html);
   if (nav) {
     console.log('\n→ _nav.html');
-    const filtered = filterBodyChunk(nav);
+    const filtered = promoteActiveIdToClass(filterBodyChunk(nav));
     const withAssets = await rewriteAndDownloadAssets(filtered, gfxDir);
     await writePartial(root, '_nav', withAssets, force);
   } else {
