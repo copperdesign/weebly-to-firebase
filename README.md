@@ -10,14 +10,15 @@ JS modules). Zero deps (Node built-ins only; `wget` for the crawler).
 ## Install
 
 ```bash
-cd "/Users/home/Work Files/Weebly-to-Firebase"
+git clone https://github.com/copperdesign/weebly-to-firebase.git
+cd weebly-to-firebase
 npm link          # one-time — makes `weebly-to-firebase` and `w2f` available globally
 ```
 
-Or invoke directly:
+Or invoke directly without linking:
 
 ```bash
-node "/Users/home/Work Files/Weebly-to-Firebase/cli.mjs" [command] [options]
+node /path/to/weebly-to-firebase/cli.mjs [command] [options]
 ```
 
 ## Quick start
@@ -32,11 +33,11 @@ weebly-to-firebase            # interactive — prompts for everything
 
 ```bash
 w2f init --yes \
-  --name "Nele Quaas" \
-  --firebase-project nele-quaas-web \
-  --hosting-site nele-quaas \
-  --live-domain nele-quaas.com \
-  --github-repo copperdesign/website-nelequaas \
+  --name "My Site" \
+  --firebase-project my-site-web \
+  --hosting-site my-site \
+  --live-domain example.weebly.com \
+  --github-repo your-org/my-site \
   --setup-firebase   # create the Firebase project + hosting site via CLI
 ```
 
@@ -336,10 +337,9 @@ cache to `<target>/.weebly-migrate.json` and are offered as defaults next time.
 - **Why `reference/` is outside `src/`.** Clear mental separation: `src/` is
   the new source of truth, `reference/` is the corpus you read while porting.
   Gitignored (regenerate via `crawl`).
-- **Why `public/` is checked in.** Mirrors the Q42 / Katrin Fillies pattern:
-  `npm run build:html` (posthtml) compiles `src/html/*.html` → `public/` locally;
-  the compiled HTML is committed so Firebase deploy doesn't need a build step
-  in CI.
+- **Why `public/` is checked in.** `npm run build:html` (posthtml) compiles
+  `src/html/*.html` → `public/` locally; the compiled HTML is committed so
+  Firebase deploy doesn't need a build step in CI.
 - **Why the tool lives outside the scaffolded project.** The project ships
   clean — no `scripts/` folder, no migration tooling in its repo. The tool
   stays useful for the next Weebly site you migrate.

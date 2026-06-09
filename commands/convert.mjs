@@ -4,9 +4,9 @@
  * What it does:
  *   - Copies WeeblyExport/styles/*.less    → src/less/
  *   - Copies WeeblyExport/assets/*.js      → src/js/
- *   - Generates skeleton `.html` files in src/html/ matching the standard
- *     Q42-style pattern. Partials use the Sass-style `_` prefix
- *     (`_meta.html`, `_nav.html`, etc.) and are composed via posthtml-include
+ *   - Generates skeleton `.html` files in src/html/ for the standard page set.
+ *     Partials use the Sass-style `_` prefix (`_meta.html`, `_nav.html`, etc.)
+ *     and are composed via posthtml-include
  *     (`<include src="_meta.html"></include>`). Each skeleton references the
  *     Weebly source so porting is a copy-paste-port loop, not a guess.
  *
@@ -31,9 +31,9 @@ import { composeMainImports } from '../lib/less.mjs';
 import { composeAppImports } from '../lib/js.mjs';
 
 /**
- * Standard page set, mirroring Q42's src/html/ shape.
- * Partials use the Sass-convention `_` prefix so the posthtml-cli build glob
- * (`src/html/[!_]*.html`) can pick up pages while ignoring partials.
+ * Standard page set. Partials use the Sass-convention `_` prefix so the
+ * posthtml-cli build glob (`src/html/[!_]*.html`) can pick up pages while
+ * ignoring partials.
  */
 const PAGES = ['index', '404', 'impressum', 'datenschutz', 'kontakt'];
 const PARTIALS = ['_meta', '_nav', '_footer', '_gdpr'];

@@ -347,14 +347,14 @@ const CSS_URL_RE = /url\(\s*(["']?)([^)"']+)\1\s*\)/gi;
  * Since `"` and `'` aren't legal in URL contexts anyway, stripping these
  * entity pairs entirely is safe: the original style was `url("…")`, the
  * quotes were structural, and a cleaned URL with the same path is what we
- * want. Double slashes from `nelequaas.de/&quot;/uploads/…` collapse on
+ * want. Double slashes from `example.com/&quot;/uploads/…` collapse on
  * server parse.
  */
 function decodeEntityQuotes(url) {
   const stripped = url.replace(/&(?:quot|#34|apos|#39);/gi, '');
   // Collapse the double-slash artifact that shows up when the structural
-  // wrapping quote sat between host and path: `nelequaas.de/&quot;/uploads/…`
-  // strips to `nelequaas.de//uploads/…`, and Apache 404s on the `//`. Keep
+  // wrapping quote sat between host and path: `example.com/&quot;/uploads/…`
+  // strips to `example.com//uploads/…`, and Apache 404s on the `//`. Keep
   // the protocol's `://` untouched.
   return stripped.replace(/([^:])\/{2,}/g, '$1/');
 }

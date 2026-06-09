@@ -38,7 +38,7 @@ async function readJson(p, fallback = {}) {
   catch { return fallback; }
 }
 
-/** kebab-case a free-form name. "Nele Quaas" → "nele-quaas". */
+/** kebab-case a free-form name. "My Site" → "my-site". */
 function slugify(s) {
   return s.toLowerCase()
     .normalize('NFKD').replace(/[̀-ͯ]/g, '') // strip diacritics (ü → u)

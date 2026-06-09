@@ -65,7 +65,7 @@ async function ensureWget() {
 
 /**
  * Normalize a domain input. Accepts any of:
- *   nele-quaas.com, www.nele-quaas.com, https://nele-quaas.com/, http://...
+ *   example.com, www.example.com, https://example.com/, http://...
  * Returns { domain, url } — `domain` is bare (matches the directory wget
  * writes the mirror to), `url` is the https:// root wget starts crawling from.
  */
@@ -175,7 +175,7 @@ export async function run(flags = {}, positionals = []) {
   const explicit = flags.domain || positionals[0];
   const rawDomain = explicit
     || cfg.liveDomain
-    || (autoAccept ? '' : await ask('Live Weebly domain (e.g. nele-quaas.com)', { default: '' }));
+    || (autoAccept ? '' : await ask('Live Weebly domain (e.g. example.weebly.com)', { default: '' }));
 
   if (!rawDomain) {
     console.log('No domain provided — skipping crawl.');
