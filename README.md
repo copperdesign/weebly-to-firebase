@@ -360,3 +360,17 @@ lib/
   templates.mjs          file generators for the scaffolded project
   firebase.mjs           `firebase` CLI driver for --setup-firebase
 ```
+
+## Contributing
+
+PRs and issues welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+the PR workflow, and what fits the scope of the tool. The repo follows the
+[Contributor Covenant](CODE_OF_CONDUCT.md).
+
+Quick version: fork, branch off `main`, run your change against a real
+Weebly site, open a PR. I (@copperdesign) review and merge.
+
+## License
+
+[MIT](LICENSE) © Christian Fillies.
+

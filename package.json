@@ -4,6 +4,24 @@
   "description": "CLI to scaffold a Firebase Hosting project from a live Weebly site (wget-driven; optional theme-export overlay).",
   "type": "module",
   "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/copperdesign/weebly-to-firebase#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/copperdesign/weebly-to-firebase.git"
+  },
+  "bugs": {
+    "url": "https://github.com/copperdesign/weebly-to-firebase/issues"
+  },
+  "keywords": [
+    "weebly",
+    "firebase",
+    "firebase-hosting",
+    "migration",
+    "cli",
+    "static-site",
+    "wget"
+  ],
   "bin": {
     "weebly-to-firebase": "./cli.mjs",
     "w2f": "./cli.mjs"
