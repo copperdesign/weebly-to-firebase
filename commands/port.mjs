@@ -177,22 +177,44 @@ function stripWeeblyTraces(html) {
 }
 
 /**
+ * Tags appended to every generated `_meta.html` so the LESS+rollup build
+ * actually shows up in the browser. Originally the comment in filterMetaHead
+ * promised the build "re-attaches our own CSS/JS via package.json scripts,"
+ * but nothing in the pipeline ever did — pages rendered unstyled with all
+ * 350+KB of compiled CSS sitting orphaned in public/assets/css/. Appending
+ * here closes that gap.
+ *
+ * Both go in <head> via the _meta include: `defer` lets the JS land in head
+ * without blocking parsing, which is the simplest place to put it without
+ * also editing the page skeleton template.
+ */
+const BUILD_ASSET_TAGS = `<link rel="stylesheet" href="/assets/css/main.css">
+<script src="/assets/js/app.js" defer></script>`;
+
+/**
  * Strip noise from the head block: scripts, tracking <noscript>, external
  * stylesheets, plus Weebly-specific traces. Keep semantic meta (charset,
- * title, description, og:*) and the language attribute. The build re-attaches
- * our own CSS/JS via package.json scripts, so dragging Weebly's link tags
- * forward only hurts.
+ * title, description, og:*) and the language attribute. The build's own
+ * CSS+JS tags are appended (see BUILD_ASSET_TAGS) so the compiled bundles
+ * actually load.
  */
 function filterMetaHead(headHtml) {
-  return stripWeeblyTraces(headHtml
+  const filtered = stripWeeblyTraces(headHtml
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '')
     .replace(/<link\b[^>]*rel=["']?stylesheet["']?[^>]*\/?>/gi, '')
     .replace(/<link\b[^>]*(?:editmysite|weebly|squarespace)[^>]*\/?>/gi, '')
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ''))
+    // Strip Weebly cache-busters off any URL in href / content / src attrs
+    // (og:image, og:url, canonical, etc.). Pattern is constrained to forms
+    // Weebly emits — `?\d{8,}` and `?buildTime=…` — to avoid clobbering
+    // intentional query strings.
+    .replace(/(\s(?:href|content|src)\s*=\s*["'])(https?:\/\/[^"']+)\?(?:buildTime=|build=|\d{8,})[^"']*(["'])/gi,
+      (_, pre, url, post) => `${pre}${url}${post}`)
     // collapse leftover empty lines
     .replace(/^\s*[\r\n]/gm, '')
     .trim();
+  return `${filtered}\n${BUILD_ASSET_TAGS}`;
 }
 
 /** Same noise filter for body sections. */
@@ -212,6 +234,37 @@ function filterBodyChunk(html) {
 const URL_ATTR_RE = /(\s(?:src|href|poster)\s*=\s*)(["'])([^"']+)\2/gi;
 const SRCSET_RE = /(\ssrcset\s*=\s*)(["'])([^"']+)\2/gi;
 const CSS_URL_RE = /url\(\s*(["']?)([^)"']+)\1\s*\)/gi;
+
+/**
+ * Decode the HTML entity quotes Weebly's editor injects into inline
+ * `style="background-image: url(…)"` attributes. The serializer wraps the
+ * url() argument in literal `&quot;…&quot;`, which leaks into our CSS_URL_RE
+ * capture as a literal `&quot;` substring — the URL then 404s on fetch.
+ *
+ * Since `"` and `'` aren't legal in URL contexts anyway, stripping these
+ * entity pairs entirely is safe: the original style was `url("…")`, the
+ * quotes were structural, and a cleaned URL with the same path is what we
+ * want. Double slashes from `nelequaas.de/&quot;/uploads/…` collapse on
+ * server parse.
+ */
+function decodeEntityQuotes(url) {
+  const stripped = url.replace(/&(?:quot|#34|apos|#39);/gi, '');
+  // Collapse the double-slash artifact that shows up when the structural
+  // wrapping quote sat between host and path: `nelequaas.de/&quot;/uploads/…`
+  // strips to `nelequaas.de//uploads/…`, and Apache 404s on the `//`. Keep
+  // the protocol's `://` untouched.
+  return stripped.replace(/([^:])\/{2,}/g, '$1/');
+}
+
+/**
+ * Drop the Weebly cache-buster (`?1718830641`, `?buildTime=…`) and any
+ * fragment from a URL so the value we emit into generated source files is
+ * stable across re-runs and not visually noisy. Only the query string and
+ * fragment are stripped — the path, host, and scheme stay intact.
+ */
+function stripCacheBuster(url) {
+  return String(url).split(/[?#]/)[0];
+}
 
 function isLocalishUrl(u) {
   return !u || u.startsWith('data:') || u.startsWith('#') || u.startsWith('mailto:') || u.startsWith('tel:');
@@ -283,8 +336,14 @@ async function downloadOne(url, destDir) {
  * user sees them in the source and can address them by hand.
  */
 async function rewriteAndDownloadAssets(html, gfxDir) {
-  const downloads = new Map(); // original URL → local filename
-  const collect = u => {
+  const downloads = new Map(); // cleaned URL → local filename
+  // raw-as-captured → cleaned, so the rewrite phase can look up the same
+  // key. Necessary because inline-style URLs come in entity-encoded
+  // (see decodeEntityQuotes) but we want a single canonical key per URL.
+  const cleaned = new Map();
+  const collect = raw => {
+    const u = decodeEntityQuotes(raw);
+    cleaned.set(raw, u);
     if (isLocalishUrl(u)) return;
     if (!isImageUrl(u)) return;
     if (downloads.has(u)) return;
@@ -308,9 +367,10 @@ async function rewriteAndDownloadAssets(html, gfxDir) {
 
   // 3. Rewrite occurrences. Only URLs we successfully downloaded get
   //    rewritten — leave broken ones visible.
-  const rewriteOne = u => {
-    const local = downloads.get(u);
-    return local ? `/assets/gfx/${local}` : u;
+  const rewriteOne = raw => {
+    const key = cleaned.get(raw) ?? raw;
+    const local = downloads.get(key);
+    return local ? `/assets/gfx/${local}` : raw;
   };
   let out = html
     .replace(URL_ATTR_RE, (_, pre, q, u) => `${pre}${q}${rewriteOne(u)}${q}`)
@@ -551,17 +611,6 @@ function stripFontFaces(css) {
 }
 
 /**
- * Same-origin filter for "this is a real Weebly site stylesheet, dump it" vs
- * "this is a CDN webfont sheet, leave it to portFonts." We dump only files
- * whose URL host matches the user's live domain — CDN-served theme CSS lands
- * in `convert`'s territory, and Google-Fonts-style sheets are exclusively
- * font-face anyway.
- */
-function isSameOriginCss(absUrl, host) {
-  try { return new URL(absUrl).host === host; } catch { return false; }
-}
-
-/**
  * Rewrite `url(…)` references inside a dumped stylesheet body. Two transforms:
  *
  *   1. Image-extension URLs that we successfully downloaded get pointed at
@@ -595,7 +644,7 @@ async function rewriteDumpCss(css, baseUrl, gfxDir) {
 }
 
 /**
- * Pull every same-origin linked stylesheet from the page head, drop @font-face
+ * Pull every linked stylesheet from the page head, drop @font-face
  * declarations (those go to _fonts.less), download any referenced images, and
  * write the result to `src/less/_w2f-<basename>.less`.
  *
@@ -605,9 +654,13 @@ async function rewriteDumpCss(css, baseUrl, gfxDir) {
  * structured partials (`variables.less`, `_global.less`, …) compose AFTER
  * the dump in main.less and override it rule-by-rule.
  *
- * Same-origin only — CDN-hosted theme sheets are usually webfont catalogs
- * (handled by portFonts) and dragging them in as inline LESS adds nothing
- * the build needs.
+ * Origin-agnostic on purpose — Weebly's theme CSS lives on
+ * `cdn2.editmysite.com` (sites.css, fancybox.css, social-icons.css), and
+ * a same-origin filter would silently skip everything that actually
+ * carries the layout/typography rules. Pure webfont sheets like
+ * `cdn2.editmysite.com/fonts/Lato/font.css` collapse to empty after
+ * `stripFontFaces` and get skipped naturally — that's the right gate, not
+ * host matching.
  */
 async function portMirrorStyles(root, headHtml, baseUrl, gfxDir, force) {
   console.log('\n→ _w2f-*.less (mirror stylesheets)');
@@ -616,21 +669,28 @@ async function portMirrorStyles(root, headHtml, baseUrl, gfxDir, force) {
     console.log('  !  no <link rel=stylesheet> in head');
     return;
   }
-  let host;
-  try { host = new URL(baseUrl).host; } catch { host = ''; }
   const lessDir = path.join(root, 'src/less');
   await fs.mkdir(lessDir, { recursive: true });
 
   let dumped = 0;
+  const seenNames = new Set();
   for (const link of links) {
     let absLink;
     try { absLink = new URL(link, baseUrl).href; } catch { continue; }
-    if (!isSameOriginCss(absLink, host)) continue;
     const css = await fetchText(absLink);
     if (!css) continue;
     const stripped = stripFontFaces(css).trim();
     if (!stripped) continue; // sheet was pure @font-face
     const name = dumpStylesheetName(absLink);
+    // Multiple stylesheets can resolve to the same basename (e.g. two
+    // `font.css` siblings on a CDN). The font.css cases collapse to empty
+    // above; everything else gets the same destination, so first-write wins
+    // and we log subsequent collisions instead of silently re-writing.
+    if (seenNames.has(name)) {
+      console.log(`  !  collision: ${absLink} → ${name}.less already written, skipping`);
+      continue;
+    }
+    seenNames.add(name);
     const dest = path.join(lessDir, `${name}.less`);
     if (await exists(dest) && !force) {
       const existing = await fs.readFile(dest, 'utf8');
@@ -640,7 +700,7 @@ async function portMirrorStyles(root, headHtml, baseUrl, gfxDir, force) {
       }
     }
     const rewritten = await rewriteDumpCss(stripped, absLink, gfxDir);
-    const body = `// ${name}.less — Generated by w2f port from ${absLink}.
+    const body = `// ${name}.less — Generated by w2f port from ${stripCacheBuster(absLink)}.
 //
 // Raw compiled CSS from the wget mirror. Imported between variables/stubs
 // and the canonical Weebly partials in main.less — structured partials (from
@@ -657,6 +717,58 @@ ${rewritten}
     dumped++;
   }
   if (!dumped) console.log('  !  no same-origin stylesheets dumped');
+}
+
+/**
+ * Pull every inline `<style>` block out of the source head, concat their
+ * bodies, and write the result to `src/less/_w2f-inline.less`.
+ *
+ * Weebly's editor stores per-site customizations (logo color, title font,
+ * size overrides) as inline `<style>` in each page's head — they aren't in
+ * any linked stylesheet, and they typically carry `!important`. Without
+ * preserving them, the rendered page loses every editor-applied tweak
+ * (which is what was happening: the red `#wsite-title` color, the Lato
+ * paragraph font, the Questrial nav font — all silently dropped).
+ *
+ * Lands as a `_w2f-*` partial so `composeMainImports` picks it up
+ * automatically. The Weebly rules use ID selectors + `!important`, so
+ * source-order against the other dumps doesn't matter for the rule cascade.
+ */
+async function portInlineStyles(root, headHtml, force) {
+  console.log('\n→ _w2f-inline.less');
+  const blocks = [...headHtml.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)]
+    .map(m => m[1].trim())
+    .filter(Boolean);
+  if (!blocks.length) {
+    console.log('  !  no inline <style> blocks in head');
+    return;
+  }
+  const dest = path.join(root, 'src/less/_w2f-inline.less');
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  if (await exists(dest) && !force) {
+    const existing = await fs.readFile(dest, 'utf8');
+    if (!MAIN_LESS_MARKER.test(existing)) {
+      console.log('  skip src/less/_w2f-inline.less (hand-edited; use --force)');
+      return;
+    }
+  }
+  const body = `// _w2f-inline.less — Generated by w2f port.
+//
+// Inline <style> blocks harvested from the Weebly source page head. These
+// carry editor-applied tweaks (logo color, per-element fonts, sizes) that
+// don't live in any linked stylesheet — stripping them silently in
+// filterMetaHead would drop every theme customization. The rules use ID
+// selectors + \`!important\`, so they win regardless of source order in
+// the compiled bundle.
+//
+// Re-generated on every \`w2f port\` while this marker is present; delete
+// the comment block to lock the file against future w2f rewrites.
+
+${blocks.join('\n\n')}
+`;
+  await fs.writeFile(dest, body);
+  const lines = body.split('\n').length;
+  console.log(`  +    src/less/_w2f-inline.less (${blocks.length} block${blocks.length === 1 ? '' : 's'}, ${lines} lines)`);
 }
 
 /**
@@ -827,6 +939,10 @@ async function portSetupFromIndex(root, html, baseUrl, gfxDir, force) {
     // buildable even when the user hasn't dropped a WeeblyExport into
     // reference/. composeMainImports picks them up automatically.
     await portMirrorStyles(root, head, baseUrl, gfxDir, force);
+    // Inline <style> blocks from the head — must run BEFORE filterMetaHead
+    // strips them out of the rendered _meta.html. Carries the editor's
+    // per-site theme tweaks (logo color, fonts, sizes).
+    await portInlineStyles(root, head, force);
     // Undefined-variable stubs go on disk BEFORE main.less composes so the
     // generated entry-point picks them up via composeMainImports().
     await portUndefinedVariables(root, force);
@@ -867,7 +983,30 @@ async function portSetupFromIndex(root, html, baseUrl, gfxDir, force) {
  * main slot. Falls back to scaffolding a skeleton when the page doesn't
  * exist yet (`port --all` discovers pages not in convert's fixed list).
  */
+/**
+ * Download every image URL referenced anywhere in the source page — inline
+ * `style="background-image: url(…)"` attributes, hero sections sitting
+ * between nav and main, and other regions that don't make it into a
+ * structured partial. The rewritten HTML is discarded; we're only here for
+ * the side-effect downloads landing the JPGs/PNGs in `public/assets/gfx/`.
+ *
+ * Closes the "I can see the hero on the live site but the local mirror
+ * doesn't have the file" gap: wget chokes on Weebly's entity-encoded
+ * inline-style URLs (e.g. `url(…/&quot;…&quot;)`) and gives up; port's URL
+ * cleaner (decodeEntityQuotes) and live-fetcher together don't.
+ *
+ * Cheap to repeat — downloadOne short-circuits on existing files, so this
+ * is effectively a no-op on re-runs.
+ */
+async function sweepPageAssets(html, gfxDir) {
+  await rewriteAndDownloadAssets(html, gfxDir);
+}
+
 async function portPageMain(root, domain, page, html, gfxDir, force) {
+  // Page-wide asset sweep before extraction — catches the hero/header
+  // section that lives between nav and <main> and wouldn't otherwise make
+  // it into any partial. See sweepPageAssets for why we need this.
+  await sweepPageAssets(html, gfxDir);
   const main = extractMain(html);
   if (!main) {
     console.log(`  !  no <main> / content block found for ${page}`);
@@ -900,12 +1039,19 @@ export async function run(flags = {}, positionals = []) {
     throw new Error('No domain available. Pass --domain or run `init` first to cache one.');
   }
 
-  const mirrorDir = path.join(root, 'reference', domain);
+  // crawl always writes the mirror into reference/<bareHost>/ (it collapses
+  // bare + www. sitemap seeds into one tree via --no-host-directories), so
+  // strip any www. prefix here to land on the same path regardless of how
+  // the user typed the domain.
+  const bareHost = domain.replace(/^www\./, '');
+  const mirrorDir = path.join(root, 'reference', bareHost);
   if (!(await exists(mirrorDir))) {
     throw new Error(`Mirror not found: ${mirrorDir}. Run \`w2f crawl ${domain}\` first.`);
   }
 
   const gfxDir = path.join(root, 'public/assets/gfx');
+  // Keep the user's chosen host (incl. www. if they typed it) in baseUrl so
+  // linked stylesheets resolve against the canonical origin.
   const baseUrl = `https://${domain}/`;
 
   // — Decide the list of pages to port —

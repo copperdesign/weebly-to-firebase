@@ -220,10 +220,21 @@ export async function run(flags = {}, positionals = []) {
   //   --page-requisites     include CSS/JS/images each page needs
   //   --no-parent           don't walk up above the start URL
   //   --domains=            restrict to the site itself (bare + www.)
+  //   --no-host-directories collapse bare + www. into one mirror tree —
+  //                         without this, sitemap seeds on the "other" host
+  //                         (e.g. www. when the cached domain is bare) land
+  //                         in a sibling reference/www.<host>/ directory that
+  //                         `port --all` never reads. Weebly sitemaps almost
+  //                         always pin a single canonical host, so without
+  //                         this flag we'd silently mirror half the site into
+  //                         the wrong dir.
   //   --restrict-file-names=unix   safe for macOS
   //   -e robots=off         Weebly's robots.txt blocks much of the site
   //   --user-agent          some Weebly CDNs serve different markup to bots
-  //   -P reference/         output base
+  //   -P reference/<host>/  output base — paired with --no-host-directories
+  //                         so the mirror lands at the same path the port
+  //                         step reads from regardless of which host wget
+  //                         actually fetched
   //   -i <seed-file>        seed the crawl from sitemap URLs (when available)
   const args = [
     '--mirror',
@@ -232,10 +243,11 @@ export async function run(flags = {}, positionals = []) {
     '--page-requisites',
     '--no-parent',
     `--domains=${allowedHosts}`,
+    '--no-host-directories',
     '--restrict-file-names=unix',
     '-e', 'robots=off',
     '--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36',
-    '-P', 'reference',
+    '-P', `reference/${bareHost}`,
   ];
   if (seedFile) args.push('-i', seedFile);
   args.push(url);
