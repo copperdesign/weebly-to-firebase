@@ -1,11 +1,12 @@
 {
   "name": "weebly-to-firebase",
-  "version": "0.1.0",
-  "description": "Scaffold a Firebase Hosting project from a Weebly theme export.",
+  "version": "0.2.0",
+  "description": "CLI to scaffold a Firebase Hosting project from a Weebly theme export.",
   "type": "module",
   "private": true,
   "bin": {
-    "weebly-to-firebase": "./converter.mjs"
+    "weebly-to-firebase": "./cli.mjs",
+    "w2f": "./cli.mjs"
   },
   "engines": {
     "node": ">=18"

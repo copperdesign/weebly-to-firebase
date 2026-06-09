@@ -1,25 +1,26 @@
 /**
- * Mirror the live Weebly site into `<target>/reference/<domain>/` so the
- * original HTML, images, fonts, JS, and CSS are available offline for porting.
+ * `weebly-to-firebase crawl` — mirror the live Weebly site into
+ * <target>/reference/<domain>/ via wget.
  *
- * Uses `wget` (must be installed: `brew install wget`). wget is the right tool
- * here — battle-tested recursive download, link rewriting, page-requisite
- * fetching. Rewriting that in Node would be a weekend project for no benefit.
+ * wget is the right tool here — battle-tested recursive download, link
+ * rewriting, page-requisite fetching. Rewriting that in Node would be a
+ * weekend project for no benefit.
  *
  * Output goes to reference/, which is gitignored. Re-running just refreshes;
- * wget's `--mirror` is timestamp-aware so unchanged files aren't re-downloaded.
+ * wget's --mirror is timestamp-aware so unchanged files aren't re-downloaded.
  *
- * Standalone:
- *   node ~/Work\ Files/Weebly-to-Firebase/crawl-site.mjs [target] [domain]
- * Both args are optional. Without [target] uses cwd. Without [domain] reads
- * from `<target>/.weebly-migrate.json` or prompts.
+ * Domain resolution order:
+ *   1. --domain <d>
+ *   2. positional argument: `weebly-to-firebase crawl <domain>`
+ *   3. cached value in <target>/.weebly-migrate.json
+ *   4. interactive prompt (unless --yes, in which case bail)
  */
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { ask, askYesNo, close } from './lib/prompt.mjs';
-import { resolveTarget } from './lib/target.mjs';
+import { ask, askYesNo } from '../lib/prompt.mjs';
+import { resolveTarget } from '../lib/target.mjs';
 
 async function exists(p) {
   try { await fs.access(p); return true; } catch { return false; }
@@ -59,9 +60,7 @@ function normalizeDomain(raw) {
   let s = raw.trim();
   s = s.replace(/^https?:\/\//, '');
   s = s.replace(/\/+$/, '');
-  const domain = s;
-  const url = `https://${s}/`;
-  return { domain, url };
+  return { domain: s, url: `https://${s}/` };
 }
 
 function runWget(args, cwd) {
@@ -70,7 +69,7 @@ function runWget(args, cwd) {
     const child = spawn('wget', args, { cwd, stdio: 'inherit' });
     child.on('exit', code => {
       // wget exits non-zero on partial fetches (404s on subpages, etc.) —
-      // that's normal for a public site mirror; surface it but don't throw.
+      // normal for public-site mirroring; surface it but don't throw.
       if (code !== 0) console.log(`\n(wget exited ${code} — partial mirror; this is usually fine.)`);
       resolve(code);
     });
@@ -78,14 +77,16 @@ function runWget(args, cwd) {
   });
 }
 
-export async function run({ root, interactive = true, domain: domainArg } = {}) {
-  if (!root) root = resolveTarget(process.argv.slice(2));
+export async function run(flags = {}, positionals = []) {
+  const root = resolveTarget(flags.target);
   const cfg = await loadConfig(root);
+  const autoAccept = !!flags.yes;
 
-  const rawDomain = domainArg
-    || (interactive
-        ? await ask('Live Weebly domain (e.g. nele-quaas.com)', cfg.liveDomain || '')
-        : cfg.liveDomain);
+  // Resolve domain: --domain wins, then positional, then cache, then prompt.
+  const explicit = flags.domain || positionals[0];
+  const rawDomain = explicit
+    || cfg.liveDomain
+    || (autoAccept ? '' : await ask('Live Weebly domain (e.g. nele-quaas.com)', { default: '' }));
 
   if (!rawDomain) {
     console.log('No domain provided — skipping crawl.');
@@ -93,20 +94,20 @@ export async function run({ root, interactive = true, domain: domainArg } = {}) 
   }
 
   const { domain, url } = normalizeDomain(rawDomain);
-  const outDir = path.join(root, 'reference');
-  await fs.mkdir(outDir, { recursive: true });
+  await fs.mkdir(path.join(root, 'reference'), { recursive: true });
 
-  if (interactive) {
-    const ok = await askYesNo(`Mirror ${url} into reference/${domain}/?`, true);
+  // Only confirm if neither --yes nor an explicit domain was given.
+  if (!explicit && !autoAccept) {
+    const ok = await askYesNo(`Mirror ${url} into reference/${domain}/?`, { default: true });
     if (!ok) return;
   }
 
   if (!(await ensureWget())) return;
 
   // wget flags, deliberately chosen:
-  //   --mirror              recursive + timestamps + infinite depth + no-clobber off
-  //   --convert-links       rewrite links to work offline
-  //   --adjust-extension    foo.php → foo.php.html for browseable mirror
+  //   --mirror              recursive + timestamps + infinite depth
+  //   --convert-links       rewrite links so the mirror works offline
+  //   --adjust-extension    foo.php → foo.php.html for browseability
   //   --page-requisites     include CSS/JS/images each page needs
   //   --no-parent           don't walk up above the start URL
   //   --domains=            restrict to the site itself
@@ -132,15 +133,4 @@ export async function run({ root, interactive = true, domain: domainArg } = {}) 
 
   console.log(`\nMirror in ${path.join(root, 'reference', domain)}/`);
   console.log('(re-run any time — wget skips unchanged files.)');
-}
-
-// Standalone entry point. Parse positional args: [target] [domain].
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const [targetArg, domainArg] = process.argv.slice(2);
-  try {
-    const root = resolveTarget(targetArg ? [targetArg] : []);
-    await run({ root, interactive: !domainArg, domain: domainArg });
-  } finally {
-    close();
-  }
 }

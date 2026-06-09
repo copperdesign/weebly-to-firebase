@@ -1,35 +1,28 @@
-#!/usr/bin/env node
 /**
- * Weebly → Firebase converter (main entry).
+ * `weebly-to-firebase init` — scaffold a Firebase Hosting project from an
+ * existing src/WeeblyExport/.
  *
- * Bootstraps a Firebase Hosting project around an existing src/WeeblyExport/.
+ * Interactive by default; flag-driven when --yes or per-question flags are
+ * provided. Idempotent: prior answers cached in <target>/.weebly-migrate.json
+ * and offered as defaults; existing files are never overwritten.
  *
- * Interactive and idempotent: writes the standard scaffold (package.json,
- * firebase.json, .firebaserc, .gitignore, .gitattributes, README.md), creates
- * src/{html,less,js,gfx,img} and public/, then optionally:
- *   - migrates Weebly assets into src/   (delegated to convert-assets.mjs)
- *   - mirrors the live site into reference/  (delegated to crawl-site.mjs)
- *   - initializes git with an initial commit
- *
- * Re-runnable: prior answers are cached in <target>/.weebly-migrate.json and
- * offered as defaults next time. Never overwrites existing files.
- *
- * Usage:
- *   cd <project-root> && node ~/Work\ Files/Weebly-to-Firebase/converter.mjs
- *   # or
- *   node ~/Work\ Files/Weebly-to-Firebase/converter.mjs <project-root>
- *   # or, if linked globally (`npm link` from this dir):
- *   weebly-to-firebase [project-root]
+ * Steps:
+ *   1. Prompt (or read flags) for project name, slug, description, firebase
+ *      project, hosting site, live domain, github repo.
+ *   2. Write package.json, firebase.json, .firebaserc, .gitignore,
+ *      .gitattributes, README.md (skip if exists).
+ *   3. Create src/{html,less,js,gfx,img}, public/assets/{css,js,img}, reference/.
+ *   4. Optionally: run `convert`, run `crawl`, `git init` + initial commit.
  */
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { ask, askValid, askYesNo, close } from './lib/prompt.mjs';
-import { resolveTarget } from './lib/target.mjs';
-import * as t from './lib/templates.mjs';
-import { run as runConvert } from './convert-assets.mjs';
-import { run as runCrawl } from './crawl-site.mjs';
+import { ask, askValid, askYesNo } from '../lib/prompt.mjs';
+import { resolveTarget } from '../lib/target.mjs';
+import * as t from '../lib/templates.mjs';
+import { run as runConvert } from './convert.mjs';
+import { run as runCrawl } from './crawl.mjs';
 
 async function exists(p) {
   try { await fs.access(p); return true; } catch { return false; }
@@ -49,13 +42,10 @@ function slugify(s) {
     .replace(/^-+|-+$/g, '');
 }
 
-/**
- * Write a file only if it doesn't already exist, unless `force` is true.
- * Returns true if written.
- */
-async function writeIfMissing(root, relPath, contents, { force = false } = {}) {
+/** Write file only if it doesn't already exist. Returns true if written. */
+async function writeIfMissing(root, relPath, contents) {
   const filePath = path.join(root, relPath);
-  if (!force && await exists(filePath)) {
+  if (await exists(filePath)) {
     console.log(`  skip ${relPath} (exists)`);
     return false;
   }
@@ -65,7 +55,6 @@ async function writeIfMissing(root, relPath, contents, { force = false } = {}) {
   return true;
 }
 
-/** Spawn a command, inheriting stdio. Resolves with exit code. */
 function runCmd(cmd, args, cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd, stdio: 'inherit' });
@@ -74,9 +63,14 @@ function runCmd(cmd, args, cwd) {
   });
 }
 
-async function promptConfig(root, prior) {
-  // Heuristic default for project name: the target dir, or its parent if the
-  // target is a generic "web" / "site" / "frontend" folder.
+/**
+ * Build the config object by merging (in order of precedence):
+ *   flag value > prior cached answer > computed default.
+ */
+async function buildConfig(root, flags, prior) {
+  const autoAccept = !!flags.yes;
+
+  // Default project name from dir name, falling back to parent if dir is generic.
   const dirName = path.basename(root);
   const generic = ['web', 'site', 'frontend', 'www'];
   const fallback = generic.includes(dirName.toLowerCase())
@@ -85,29 +79,33 @@ async function promptConfig(root, prior) {
   const defaultName = prior.name || fallback;
 
   console.log('\nProject details:\n');
-  const name = await ask('Project name', defaultName);
-  const slug = await ask('npm package slug', prior.slug || slugify(name));
-  const description = await ask('One-line description', prior.description || `${name} website`);
+  const name = await ask('Project name',
+    { default: defaultName, value: flags.name, autoAccept });
+  const slug = await ask('npm package slug',
+    { default: prior.slug || slugify(name), value: flags.slug, autoAccept });
+  const description = await ask('One-line description',
+    { default: prior.description || `${name} website`, value: flags.description, autoAccept });
 
   console.log('\nFirebase:\n');
-  const firebaseProject = await askValid(
-    'Firebase project ID',
-    prior.firebaseProject || slug,
-    v => v.length > 0 ? true : 'required (see firebase.google.com/project)',
-  );
+  const firebaseProject = await askValid('Firebase project ID', {
+    default: prior.firebaseProject || slug,
+    value: flags.firebaseProject,
+    autoAccept,
+    validate: v => v.length > 0 ? true : 'required (see firebase.google.com/project)',
+  });
   const hostingSite = await ask(
     'Hosting site name (firebase.json hosting.site — blank for project default)',
-    prior.hostingSite || '',
+    { default: prior.hostingSite || '', value: flags.hostingSite, autoAccept },
   );
 
   console.log('\nMigration sources:\n');
   const liveDomain = await ask(
     'Live Weebly domain (for asset mirror; blank to skip)',
-    prior.liveDomain || '',
+    { default: prior.liveDomain || '', value: flags.liveDomain, autoAccept },
   );
   const githubRepo = await ask(
     'GitHub repo (owner/name; blank if not pushing yet)',
-    prior.githubRepo || '',
+    { default: prior.githubRepo || '', value: flags.githubRepo, autoAccept },
   );
 
   return { name, slug, description, firebaseProject, hostingSite, liveDomain, githubRepo };
@@ -148,12 +146,14 @@ async function scaffoldDirectories(root) {
   }
 }
 
-async function maybeInitGit(root, cfg) {
+async function maybeInitGit(root, cfg, autoAccept) {
   if (await exists(path.join(root, '.git'))) {
     console.log('\nGit repo already initialized.');
     return;
   }
-  if (!await askYesNo('\nInitialize git repo with an initial commit?', true)) return;
+  const proceed = await askYesNo('\nInitialize git repo with an initial commit?',
+    { default: true, autoAccept });
+  if (!proceed) return;
   await runCmd('git', ['init', '-b', 'main'], root);
   await runCmd('git', ['add', '.'], root);
   await runCmd('git', ['commit', '-m', `Initial scaffold (${cfg.name})`], root);
@@ -172,15 +172,16 @@ function printNextSteps(root, cfg) {
   console.log('  npm run build        # less + js → public/');
   console.log('  npm run deploy       # firebase hosting');
   if (cfg.liveDomain) {
-    console.log('\nIf you skipped the crawl, run it any time:');
-    console.log(`  node ~/Work\\ Files/Weebly-to-Firebase/crawl-site.mjs`);
+    console.log('\nRefresh the live-site mirror any time:');
+    console.log('  weebly-to-firebase crawl');
   }
   console.log('');
 }
 
-async function main() {
-  const root = resolveTarget(process.argv.slice(2));
+export async function run(flags = {}) {
+  const root = resolveTarget(flags.target);
   const configFile = path.join(root, '.weebly-migrate.json');
+  const autoAccept = !!flags.yes;
 
   console.log('Weebly → Firebase converter\n');
   console.log(`Target: ${root}`);
@@ -188,10 +189,10 @@ async function main() {
   const prior = await readJson(configFile);
   if (Object.keys(prior).length) console.log('(prior config found — values offered as defaults)');
 
-  const cfg = await promptConfig(root, prior);
+  const cfg = await buildConfig(root, flags, prior);
   printSummary(cfg);
 
-  if (!await askYesNo('\nProceed?', true)) {
+  if (!await askYesNo('\nProceed?', { default: true, autoAccept })) {
     console.log('Aborted.');
     return;
   }
@@ -201,20 +202,25 @@ async function main() {
   await fs.writeFile(configFile, JSON.stringify(cfg, null, 2) + '\n');
   console.log(`\n  +    .weebly-migrate.json (cache for re-runs)`);
 
-  if (await askYesNo('\nConvert Weebly assets now (src/WeeblyExport → src/{less,js,html})?', true)) {
-    await runConvert({ root, interactive: true });
+  // Pass through to sub-commands with the resolved root so they don't re-resolve.
+  const subFlags = { ...flags, target: root };
+
+  if (!flags.skipConvert) {
+    const doConvert = await askYesNo(
+      '\nConvert Weebly assets now (src/WeeblyExport → src/{less,js,html})?',
+      { default: true, autoAccept },
+    );
+    if (doConvert) await runConvert(subFlags);
   }
 
-  if (cfg.liveDomain && await askYesNo(`\nMirror ${cfg.liveDomain} into reference/ now?`, true)) {
-    await runCrawl({ root, interactive: false, domain: cfg.liveDomain });
+  if (!flags.skipCrawl && cfg.liveDomain) {
+    const doCrawl = await askYesNo(
+      `\nMirror ${cfg.liveDomain} into reference/ now?`,
+      { default: true, autoAccept },
+    );
+    if (doCrawl) await runCrawl({ ...subFlags, domain: cfg.liveDomain });
   }
 
-  await maybeInitGit(root, cfg);
+  if (!flags.skipGit) await maybeInitGit(root, cfg, autoAccept);
   printNextSteps(root, cfg);
-}
-
-try {
-  await main();
-} finally {
-  close();
 }
