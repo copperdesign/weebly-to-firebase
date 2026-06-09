@@ -48,6 +48,20 @@ w2f init --yes \
 `weebly-to-firebase` and `w2f` are the same binary — `w2f` is just the short
 alias. Examples below use whichever reads more clearly in context.
 
+## Typical workflow
+
+```bash
+w2f                  # 1. scaffold + optional crawl + optional git init
+w2f port             # 2. extract index from the crawl mirror → src/html/index.html
+w2f port kontakt     # 3. … repeat per page
+npm install          # 4. inside the scaffolded project
+npm run build        # 5. posthtml + less + js → public/
+npm run deploy       # 6. firebase hosting
+```
+
+Between steps 2-3 and 5, clean up by hand in `src/html/` and `src/less/` —
+`port` is a starter, not a finished port (see [port options](#port-options)).
+
 ## Commands
 
 ```
@@ -154,8 +168,12 @@ a starter you clean up by hand, not a finished port.
 
 `init` is safe to re-run. Existing files are never overwritten. Prior answers
 cache to `<target>/.weebly-migrate.json` and are offered as defaults next time.
-The `convert` and `crawl` commands are idempotent too — convert skips existing
-files; crawl uses wget's timestamp-aware mirror mode.
+
+- **convert** — skips files that already exist in `src/{less,js,html}/`.
+- **crawl** — wget's timestamp-aware `--mirror` mode skips unchanged files.
+- **port** — partials only written if still the skeleton TODO marker; page
+  `<main>` slots replaced only while still the skeleton; image downloads skip
+  existing files in `public/assets/img/`. `--force` overrides all three.
 
 ## Prerequisites
 
