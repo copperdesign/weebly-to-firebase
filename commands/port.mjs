@@ -49,6 +49,11 @@ import {
   functionsGitignore,
   functionsReadme,
 } from '../lib/forms.mjs';
+import { isChromeImage, isChromeStylesheet } from '../lib/weebly-chrome.mjs';
+
+// Tally of chrome assets short-circuited this run. Kept module-scoped so
+// the per-call sites can stay terse and the summary fires once per port.
+let chromeSkipped = 0;
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Extraction helpers
@@ -415,6 +420,14 @@ async function exists(p) {
 async function downloadOne(url, destDir) {
   const name = basenameFromUrl(url);
   if (!name) return null;
+  // Short-circuit Weebly UI chrome (fancybox sprites, social-share sprites,
+  // commerce/loaders/etc.) — see lib/weebly-chrome.mjs. The CSS rules that
+  // reference these get retired with the `_w2f-*.less` layer; pre-empting
+  // the download keeps `public/assets/gfx/` free of orphaned sprites.
+  if (isChromeImage(name)) {
+    chromeSkipped++;
+    return null;
+  }
   const dest = path.join(destDir, name);
   if (await exists(dest)) return name;
   try {
@@ -930,6 +943,14 @@ async function portMirrorStyles(root, headHtml, baseUrl, gfxDir, force) {
   for (const link of links) {
     let absLink;
     try { absLink = new URL(link, baseUrl).href; } catch { continue; }
+    // Skip whole Weebly chrome stylesheets (fancybox, social-icons, commerce,
+    // videojs, select2). These wrap features no migrated site uses — dumping
+    // them just produces `_w2f-fancybox.less` etc. that the user deletes
+    // alongside the sprite cleanup.
+    if (isChromeStylesheet(absLink)) {
+      console.log(`  skip ${absLink} (Weebly chrome stylesheet)`);
+      continue;
+    }
     const css = await fetchText(absLink);
     if (!css) continue;
     const stripped = stripFontFaces(css).trim();
@@ -1361,6 +1382,7 @@ export async function run(flags = {}, positionals = []) {
   const root = resolveTarget(flags.target);
   const force = !!flags.force;
   const all = !!flags.all;
+  chromeSkipped = 0;
 
   // Resolve which crawled mirror to read. Flag wins, otherwise cache.
   // Normalize defensively — older caches may have stored the raw user input
@@ -1447,6 +1469,10 @@ export async function run(flags = {}, positionals = []) {
   // this feature shipped.
   if (formStats.count > 0) {
     await scaffoldFormHandler(root, formStats.count);
+  }
+
+  if (chromeSkipped > 0) {
+    console.log(`\n  ${chromeSkipped} Weebly chrome image${chromeSkipped === 1 ? '' : 's'} skipped (fancybox/social/commerce/loader sprites — see lib/weebly-chrome.mjs).`);
   }
 
   console.log('\nDone. Review src/html/, run `npm run build`, then `npm run dev`.');
