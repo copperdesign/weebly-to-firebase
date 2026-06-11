@@ -22,6 +22,7 @@ import { spawn } from 'node:child_process';
 import { ask, askValid, askYesNo } from '../lib/prompt.mjs';
 import { resolveTarget } from '../lib/target.mjs';
 import * as t from '../lib/templates.mjs';
+import { reusableModuleFiles } from '../lib/scaffold-modules.mjs';
 import { run as runConvert } from './convert.mjs';
 import { run as runCrawl } from './crawl.mjs';
 import { run as runPort } from './port.mjs';
@@ -178,6 +179,31 @@ async function scaffoldConfigFiles(root, cfg) {
   await writeIfMissing(root, '.gitignore',      t.gitignore());
   await writeIfMissing(root, '.gitattributes',  t.gitattributes());
   await writeIfMissing(root, 'README.md',       t.readme(cfg));
+  // GitHub Actions deploy workflow lands only when both pieces are known —
+  // we need the Firebase project ID (for the projectId field and the
+  // service-account secret name) and the GitHub repo (implies CI lives
+  // there at all). Otherwise the file would point at a placeholder secret
+  // and confuse more than help.
+  if (cfg.githubRepo && cfg.firebaseProject) {
+    await writeIfMissing(
+      root,
+      '.github/workflows/firebase-hosting-merge.yml',
+      t.githubActionsHostingDeploy(cfg),
+    );
+  }
+}
+
+/**
+ * Drop the reusable JS/LESS modules every Weebly migration tends to need
+ * (email-hider, embed-consent, lightbox). The files land unused — neither
+ * `app.js` nor `main.less` imports them — so they cost nothing until the
+ * user wires one up. See lib/scaffold-modules.mjs for rationale.
+ */
+async function scaffoldReusableModules(root) {
+  console.log('\nScaffolding reusable modules (opt-in — see each @docs sibling):');
+  for (const [relPath, content] of Object.entries(reusableModuleFiles())) {
+    await writeIfMissing(root, relPath, content);
+  }
 }
 
 async function scaffoldDirectories(root) {
@@ -264,6 +290,7 @@ export async function run(flags = {}) {
 
   await scaffoldConfigFiles(root, cfg);
   await scaffoldDirectories(root);
+  await scaffoldReusableModules(root);
   await fs.writeFile(configFile, JSON.stringify(cfg, null, 2) + '\n');
   console.log(`\n  +    .weebly-migrate.json (cache for re-runs)`);
 
