@@ -12,3 +12,6 @@ node_modules/
 # still commit normally.
 /*.png
 .playwright-mcp/
+
+# Local Claude Code workspace — agent notes, transcripts, scratch.
+.claude/
