@@ -65,8 +65,6 @@ Patterns referenced (no code shipped)
 - Hammer.js — MIT. Optional, loaded by the user if present; the scaffolded
   lightbox guards the binding so it works without Hammer.
   https://hammerjs.github.io/
-- Q42 email-obfuscation pattern — split-attribute mailto technique used as
-  prior art for `email-hider.js`. No Q42 code is shipped.
 
 Each item above is governed by its own license terms — this project does not
 relicense any of them. When in doubt, consult the upstream project.
