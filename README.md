@@ -9,16 +9,28 @@ JS modules). Zero deps (Node built-ins only; `wget` for the crawler).
 
 ## Install
 
+Install straight from GitHub — no npm registry account, no clone, no link:
+
+```bash
+npm install -g github:copperdesign/weebly-to-firebase
+```
+
+…or run without installing, one-shot:
+
+```bash
+npx github:copperdesign/weebly-to-firebase
+```
+
+Either way, `weebly-to-firebase` and the short alias `w2f` end up on your
+PATH (or in the `npx` invocation). Node ≥ 18 and `wget` required (the
+`postinstall` hook brew-installs `wget` on macOS).
+
+For development on the tool itself, clone and link:
+
 ```bash
 git clone https://github.com/copperdesign/weebly-to-firebase.git
 cd weebly-to-firebase
-npm link          # one-time — makes `weebly-to-firebase` and `w2f` available globally
-```
-
-Or invoke directly without linking:
-
-```bash
-node /path/to/weebly-to-firebase/cli.mjs [command] [options]
+npm link
 ```
 
 ## Quick start
