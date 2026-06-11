@@ -184,6 +184,14 @@ CDNs that `crawl` skips):
   the project builds without a WeeblyExport — `wget` is the source of
   truth. `url(…)` references inside are rewritten to `/assets/gfx/<name>`
   and the referenced images are downloaded too.
+- **Weebly chrome stylesheets** (Fancybox skin, social-icons skin, commerce
+  skin, VideoJS, Select2) are skipped — they wrap features no migrated
+  site uses. The deny-list lives in `lib/weebly-chrome.mjs`.
+- **Weebly chrome sprites** (fancybox sprites, social-share sprites,
+  commerce/cart, blog-comment, loaders, decorative bars, `@2x-s<hash>`
+  retina sprites, and a few dozen more) are skipped at download time for
+  the same reason — they end up unreferenced once the user retires the
+  `_w2f-*.less` compat layer. A summary count prints at the end of `port`.
 
 After fonts, `port` rewrites `src/less/main.less` with the canonical import
 order (`variables` → `_fonts` → `_w2f-<dumps>` → `_resets` → `_global` →
@@ -237,10 +245,14 @@ from step 1+2 landing locally.
   .gitignore .gitattributes
   README.md
   .weebly-migrate.json  # cached answers for re-runs (gitignored)
+  .github/workflows/
+    firebase-hosting-merge.yml   # only when --github-repo + --firebase-project set
   src/
     html/   # pages + Sass-style `_*.html` partials → compiled to public/
-    less/   # → public/assets/css/   (includes _w2f-*.less mirror dumps)
-    js/     # → public/assets/js/
+    less/   # → public/assets/css/   (includes _w2f-*.less mirror dumps,
+            #                         plus opt-in _embed-consent / _lightbox)
+    js/     # → public/assets/js/    (includes opt-in email-hider /
+            #                         embed-consent / lightbox modules)
     gfx/    # graphics — deployable images committed, design sources
             # (PSD/AFD/etc.) sit alongside but are stripped by .gitignore
   public/
@@ -249,6 +261,62 @@ from step 1+2 landing locally.
     WeeblyExport/       # the original theme, moved out of src/
     <domain>/           # wget mirror of the live site (gitignored)
 ```
+
+## Reusable modules (opt-in)
+
+Three modules every Weebly migration tends to need land in `src/` from
+`init`. They're scaffolded *unused* — neither `app.js` nor `main.less`
+imports them — so they cost nothing until you wire one up. Each ships with
+an `@docs` MD sibling explaining the HTML contract and wiring.
+
+| Module                              | Replaces                                   | Why scaffolded |
+| ----------------------------------- | ------------------------------------------ | -------------- |
+| `src/js/email-hider.js`             | Cloudflare `__cf_email__` runtime          | Weebly mailto links break on first deploy; Firebase Hosting has no equivalent edge decoder. |
+| `src/js/embed-consent.js` + LESS    | Weebly's "single global OK" cookie banner  | GDPR-conformant click-to-load gate for YouTube / SoundCloud / Google Maps. Iframe stays out of the DOM until consent. |
+| `src/js/lightbox.js` + LESS         | Fancybox + jQuery                          | Same `rel="lightbox[group]"` HTML hook the Weebly theme used; chrome deny-list also strips the Fancybox sprite assets at port time. |
+
+To wire one up, add `import "./<module>.js"` in `src/js/app.js` and (where
+relevant) `@import "_<module>.less"` in `src/less/main.less`. See each
+sibling `.md` for the full HTML contract.
+
+## CI / deploys
+
+When both `--firebase-project` and `--github-repo` are set, `init` scaffolds
+`.github/workflows/firebase-hosting-merge.yml` — pushes to `main` run
+`npm ci && npm run build` then deploy `public/` via
+`FirebaseExtended/action-hosting-deploy`. The workflow references a repo
+secret named `FIREBASE_SERVICE_ACCOUNT_<PROJECT>` (uppercased, dashes →
+underscores) — create it once via `firebase init hosting:github` or by
+pasting a service-account JSON into a secret of that name.
+
+## Declaring independence — retiring the `_w2f-*` compat layer
+
+`port` lands a *buildable* project — pages render, fonts load, the LESS
+compiles — but it's still wearing the Weebly skin. The natural arc after
+that is to strip the compat layer and rewrite the pages on your own small
+vocabulary. From a real migration:
+
+- Delete the dumped CSS dumps (`_w2f-*.less`) and the original Weebly
+  partials you don't want (`_blog.less`, `_commerce.less`, `_ui-kit.less`,
+  large parts of `_responsive.less`). These exist for the buildable-out-
+  of-the-box property; once your own page-types/global rules cover what
+  you actually use, they're noise.
+- Rewrite pages on a small editorial vocabulary — `.block`, `.cols`,
+  `.hero`, whatever the design wants. The point of the rewrite is to own
+  the markup; trying to preserve Weebly's class soup forever is the
+  expensive path.
+- Drop the Fancybox dependency and switch image galleries to the
+  scaffolded `lightbox.js` — the HTML hook (`rel="lightbox[group]"`) is
+  unchanged.
+- Cross-check `public/assets/gfx/` against `src/less/*.less` and
+  `src/html/*.html` references after the strip — anything orphaned is fair
+  game to delete. The chrome deny-list catches the predictable Weebly
+  sprite categories at download time, but project-specific cruft can still
+  linger.
+
+Track this work in its own commit (or PR) — keep the structural changes
+separate from per-page content edits so the diff stays reviewable. The
+port output is the starter; the rewrite is the project becoming itself.
 
 ## Forms
 
