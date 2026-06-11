@@ -1,0 +1,58 @@
+# Smoke-test the CLI on every push / PR.
+#
+# The converter has zero npm dependencies (Node built-ins + wget), so there
+# is nothing to `npm install` — the test is whether the CLI boots, parses
+# argv, and prints help for every subcommand without throwing. Catches the
+# usual drive-by regressions: missing export, broken import, accidentally
+# top-level `await` in a module that's loaded just to print help, etc.
+#
+# Matrix covers the LTS line declared in package.json (`engines.node: >=18`).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    name: smoke (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: version + global help
+        run: |
+          node cli.mjs --version
+          node cli.mjs --help
+          node cli.mjs version
+          node cli.mjs help
+
+      - name: per-command help
+        run: |
+          for cmd in init convert crawl port forms; do
+            echo "::group::help $cmd"
+            node cli.mjs help "$cmd"
+            echo "::endgroup::"
+          done
+
+      - name: unknown flag exits 2
+        run: |
+          set +e
+          node cli.mjs --definitely-not-a-flag
+          rc=$?
+          set -e
+          if [ "$rc" -ne 2 ]; then
+            echo "expected exit 2 for unknown flag, got $rc" >&2
+            exit 1
+          fi

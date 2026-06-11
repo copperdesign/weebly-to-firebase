@@ -19,3 +19,54 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+--------------------------------------------------------------------------------
+
+Third-party software and services
+
+This project bundles no third-party code — the CLI runs on Node.js built-ins
+only. The list below documents tools, services, and conventions the converter
+shells out to, scaffolds into the generated project, or references by pattern,
+so downstream users can audit their own supply chain.
+
+Runtime (required to run this CLI)
+- Node.js (>= 18) — MIT / Node.js project license. https://nodejs.org/
+- GNU Wget — GPL-3.0-or-later. Shelled out by the `crawl` command to mirror
+  the live Weebly site. https://www.gnu.org/software/wget/
+  Wget is invoked as an external process; this project does not link against
+  or distribute it. The macOS `postinstall` hook will `brew install wget` if
+  available, but otherwise leaves install to the user.
+
+Scaffolded into the generated Firebase project (devDependencies in the
+package.json this CLI writes for end users)
+- less — Apache-2.0. https://lesscss.org/
+- posthtml-cli — MIT. https://github.com/posthtml/posthtml-cli
+- posthtml-include — MIT. https://github.com/posthtml/posthtml-include
+- rollup — MIT. https://rollupjs.org/
+- terser — BSD-2-Clause. https://github.com/terser/terser
+
+Scaffolded GitHub Actions workflow (optional, opt-in deploy template)
+- actions/checkout@v4 — MIT. https://github.com/actions/checkout
+- actions/setup-node@v4 — MIT. https://github.com/actions/setup-node
+- FirebaseExtended/action-hosting-deploy@v0 — Apache-2.0.
+  https://github.com/FirebaseExtended/action-hosting-deploy
+
+External services the generated project targets
+- Firebase Hosting — Google LLC. Subject to the Firebase Terms of Service.
+  https://firebase.google.com/terms
+- hCaptcha — Intuition Machines, Inc. The scaffolded contact-form handler
+  uses hCaptcha siteverify. Subject to hCaptcha's Terms.
+  https://www.hcaptcha.com/terms
+
+Patterns referenced (no code shipped)
+- Fancybox (fancyapps) — referenced as the legacy lightbox the Weebly Unite
+  theme used; the scaffolded `lightbox.js` replaces it with a dependency-free
+  implementation. https://fancyapps.com/
+- Hammer.js — MIT. Optional, loaded by the user if present; the scaffolded
+  lightbox guards the binding so it works without Hammer.
+  https://hammerjs.github.io/
+- Q42 email-obfuscation pattern — split-attribute mailto technique used as
+  prior art for `email-hider.js`. No Q42 code is shipped.
+
+Each item above is governed by its own license terms — this project does not
+relicense any of them. When in doubt, consult the upstream project.
