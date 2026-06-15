@@ -440,5 +440,6 @@ Weebly site, open a PR. I (@copperdesign) review and merge.
 
 ## License
 
-[MIT](LICENSE) © Christian Fillies.
+MIT — see [LICENSE](./LICENSE).
 
+Created by [Christian Fillies](https://www.christianfillies.com).
