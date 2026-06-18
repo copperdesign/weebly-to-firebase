@@ -244,17 +244,70 @@ async function initGit(root, cfg) {
   await runCmd('git', ['init', '-b', 'main'], root);
   await runCmd('git', ['add', '.'], root);
   await runCmd('git', ['commit', '-m', `Initial scaffold (${cfg.name})`], root);
-  if (cfg.githubRepo) {
-    console.log(`\nNext: create the repo on GitHub and push:`);
-    console.log(`  gh repo create ${cfg.githubRepo} --private --source=. --remote=origin --push`);
+}
+
+/**
+ * Create the GitHub repo and push, when the user supplied owner/name. Supplying
+ * a repo *is* the opt-in — symmetric with how a Firebase project ID drives the
+ * Firebase CLI step. `gh repo create` with --source/--remote/--push wires the
+ * origin remote and pushes the initial commit in one shot. Non-fatal: a missing
+ * `gh`, an auth gap, or an already-existing repo is surfaced with the manual
+ * command, and the local repo is left intact.
+ */
+async function setupGithubRepo(root, cfg) {
+  console.log('\n→ GitHub repo setup\n');
+  console.log(`  +    creating ${cfg.githubRepo} and pushing…`);
+  const manual = `       gh repo create ${cfg.githubRepo} --private --source=. --remote=origin --push`;
+  try {
+    const code = await runCmd('gh', [
+      'repo', 'create', cfg.githubRepo,
+      '--private', '--source=.', '--remote=origin', '--push',
+    ], root);
+    if (code !== 0) {
+      console.log(`  !    gh repo create failed (exit ${code}). Finish by hand:`);
+      console.log(manual);
+      return false;
+    }
+    console.log('\n  GitHub repo created and pushed.');
+    return true;
+  } catch {
+    // spawn error — almost always `gh` not on PATH.
+    console.log('  !  gh CLI not found. Install https://cli.github.com then:');
+    console.log(manual);
+    return false;
   }
 }
 
-function printNextSteps(root, cfg) {
+/**
+ * Post-creation Firebase wiring: install deps and select the freshly-created
+ * project as the active alias, so the user lands on `npm run dev` / `deploy`
+ * rather than a setup checklist. Deploy is deliberately NOT run — the ported
+ * output should be eyeballed first. Non-fatal: any failure just drops back to
+ * the printed next-steps (which still list these commands).
+ */
+async function wireFirebaseProject(root, cfg) {
+  console.log('\n→ Installing dependencies + selecting project\n');
+  try {
+    console.log('  +    npm install…');
+    const npmCode = await runCmd('npm', ['install'], root);
+    if (npmCode !== 0) console.log(`  !    npm install exited ${npmCode}.`);
+    console.log(`  +    firebase use ${cfg.firebaseProject}…`);
+    const useCode = await runCmd('firebase', ['use', cfg.firebaseProject], root);
+    if (useCode !== 0) console.log(`  !    firebase use exited ${useCode}.`);
+  } catch (err) {
+    console.log(`  !  setup step failed to launch: ${err.message}`);
+  }
+}
+
+function printNextSteps(root, cfg, { firebaseWired = false } = {}) {
   console.log('\nNext steps:');
   console.log(`  cd "${root}"`);
-  console.log('  npm install');
-  console.log(`  firebase use ${cfg.firebaseProject}`);
+  // When firebase setup ran, deps are installed and the project is selected —
+  // don't re-list those as if they're still pending.
+  if (!firebaseWired) {
+    console.log('  npm install');
+    console.log(`  firebase use ${cfg.firebaseProject}`);
+  }
   console.log('  npm run dev          # firebase emulators');
   console.log('  npm run build        # less + js → public/');
   console.log('  npm run deploy       # firebase hosting');
@@ -301,8 +354,14 @@ export async function run(flags = {}) {
   const subFlags = { ...flags, target: root, yes: true };
 
   // Firebase project + hosting site, opt-in. Failures are non-fatal — the
-  // user can still finish setup by hand from the scaffolded .firebaserc.
-  if (cfg.setupFirebase) await setupFirebaseProject(cfg);
+  // user can still finish setup by hand from the scaffolded .firebaserc. On
+  // success, wire it up (npm install + firebase use) so the next move is
+  // `npm run dev` rather than a checklist.
+  let firebaseWired = false;
+  if (cfg.setupFirebase && await setupFirebaseProject(cfg)) {
+    await wireFirebaseProject(root, cfg);
+    firebaseWired = true;
+  }
 
   // — Live site (primary): crawl → port-all —
   //
@@ -342,6 +401,10 @@ export async function run(flags = {}) {
     }
   }
 
-  if (!flags.skipGit) await initGit(root, cfg);
-  printNextSteps(root, cfg);
+  if (!flags.skipGit) {
+    await initGit(root, cfg);
+    // A supplied repo name is the opt-in — create it and push the scaffold.
+    if (cfg.githubRepo) await setupGithubRepo(root, cfg);
+  }
+  printNextSteps(root, cfg, { firebaseWired });
 }
