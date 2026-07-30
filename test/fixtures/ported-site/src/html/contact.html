@@ -1,0 +1,29 @@
+<!-- contact.html — headings before AND after a mid-page <form>. Lifting -->
+<!-- must stop at the first <form> — "Office Hours" stays hand-authored -->
+<!-- tail content, not a lifted section (dev/plans/cms.md Step 4, item 5). -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Contact</title>
+</head>
+<body class="contact-page">
+  <main>
+    <h1>Get in touch</h1>
+    <p>We read every message. Expect a reply within two business days.</p>
+
+    <h2>Visit</h2>
+    <p>123 Market Street, Suite 4, Springfield.</p>
+
+    <form action="/api/submit-form" method="POST">
+      <label>Name <input type="text" name="name"></label>
+      <label>Email <input type="email" name="email"></label>
+      <label>Message <textarea name="message"></textarea></label>
+      <button type="submit">Send</button>
+    </form>
+
+    <h2>Office Hours</h2>
+    <p>Weekdays, 9am to 5pm.</p>
+  </main>
+</body>
+</html>

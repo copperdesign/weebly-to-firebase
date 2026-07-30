@@ -1,0 +1,25 @@
+<!-- wrapped.html — headings nested inside Weebly-style wrapper divs -->
+<!-- (the .main-wrap shape port's extractMain emits). Exercises the -->
+<!-- wrapper-descent path: splitAtHeadings must NOT cut through the -->
+<!-- wrapper; cms descends into it, the wrapper stays hand-authored in -->
+<!-- the page around the marker, and every lifted fragment is balanced. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Wrapped</title>
+</head>
+<body class="wrapped-page">
+  <main>
+    <div class="main-wrap">
+      <div class="container">
+        <h2>Inside the Wrap</h2>
+        <p>Content nested two wrappers deep — the standard Weebly shape.</p>
+
+        <h2>Still Inside</h2>
+        <p>A second section, sibling to the first at the same depth.</p>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

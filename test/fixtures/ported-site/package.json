@@ -1,0 +1,22 @@
+{
+  "name": "ported-site",
+  "version": "0.0.0",
+  "description": "Ported Site website",
+  "private": true,
+  "scripts": {
+    "postinstall": "command -v wget >/dev/null 2>&1 || (command -v brew >/dev/null 2>&1 && brew install wget) || true",
+    "dev": "firebase emulators:start --only hosting",
+    "deploy": "firebase deploy --only hosting",
+    "build:html": "posthtml 'src/html/[!_]*.html' -o public",
+    "build:css": "lessc src/less/main.less public/assets/css/main.css",
+    "build:js": "rollup src/js/app.js -o public/assets/js/app.js -f iife --compact",
+    "build": "npm run build:html && npm run build:css && npm run build:js"
+  },
+  "devDependencies": {
+    "less": "^4.2.0",
+    "posthtml-cli": "^0.10.0",
+    "posthtml-include": "^1.7.4",
+    "rollup": "^4.21.0",
+    "terser": "^5.31.6"
+  }
+}

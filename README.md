@@ -56,9 +56,12 @@ npm run deploy       # 4. firebase hosting
 After confirming the config at the "Proceed?" prompt, the wizard runs the
 whole pipeline automatically: scaffold → wget mirror (sitemap-seeded) →
 port every page + dump CSS/fonts/images → optional WeeblyExport overlay
-(only if `reference/WeeblyExport/` has content) → git init + initial
-commit. Opt out per step with `--skip-crawl`, `--skip-port`,
-`--skip-convert`, `--skip-git`.
+(only if `reference/WeeblyExport/` has content) → git init + initial commit
+→ scaffold the Sveltia CMS layer + lift page content (its own second
+commit). The commit order is deliberate: the pre-lift ported HTML lands in
+git first, so an already-lifted page can always be restored from history.
+Opt out per step with `--skip-crawl`, `--skip-port`, `--skip-convert`,
+`--skip-cms`, `--skip-git`.
 
 For re-runs / iteration:
 
@@ -91,6 +94,8 @@ Commands:
   port       First-pass extract from crawled mirror → src/html/ + public/assets/img/
   forms      Finalize the contact-form handler scaffolded by `port`
              (npm install + sitekey + HCAPTCHA_SECRET)
+  cms        Scaffold a Sveltia CMS layer + lift ported page content into
+             src/content/*.yml
   help [cmd] Show help (or help for a specific command)
   version    Print version
 ```
@@ -153,7 +158,7 @@ are visible immediately.
 | --- | --- |
 | `--domain <domain>` | Override the cached `liveDomain` (which mirror to read from) |
 | `--all`             | Port every `.html` file in the mirror; scaffold skeletons for unknown pages |
-| `--force`           | Replace partials and page main slot even if hand-edited |
+| `--force`           | Replace partials and page main slot even if hand-edited (cms-lifted pages stay protected — their content lives in `src/content/`) |
 
 `port` also accepts a positional page name (default `index`):
 `weebly-to-firebase port kontakt`.
@@ -234,6 +239,49 @@ the Blaze plan enabled on the project. Failures in any step are surfaced
 but don't abort the others — a Blaze-pending project can still benefit
 from step 1+2 landing locally.
 
+### `cms` options
+
+| flag | meaning |
+| --- | --- |
+| `--force`   | Re-lift a page's content where still possible, and re-render scaffold files even if unchanged |
+| `--skip-cms` | *(`init` only)* Don't run the cms step as part of the pipeline |
+
+`cms` also accepts one or more page-name positionals (no args = every page
+in `src/html/`, excluding `_`-prefixed partials — the same exclusion
+posthtml's build glob uses): `weebly-to-firebase cms kontakt`. A named page
+that doesn't exist, or is still the port skeleton, throws instead of
+silently skipping — an explicit ask deserves an explicit failure.
+
+Per page, `cms` splits the ported `<main>` at h1/h2 boundaries into
+sections (content before the first heading becomes section 0 with an empty
+heading; a heading-less page gets one section from `<title>`, TODO-flagged)
+and converts each to markdown in `src/content/<page>.yml`. Lifting stops at
+the first `<form>` — form markup and everything after it is left exactly as
+`port`/`forms` left it. The lifted markup in `src/html/<page>.html` is
+replaced with a single `<!-- @render:sections -->` marker; a build-time
+`scripts/render-content.mjs` (shipped into the scaffolded project) swaps it
+back for rendered HTML on every `npm run build`.
+
+Once per run, `cms` also scaffolds `public/admin/index.html` (the Sveltia
+shell), `public/admin/config.yml` (the pages content model — every
+processed page gets an entry under a shared `&page_fields` schema),
+`scripts/render-content.mjs`, `docs/cms.md`, and wires the scaffolded
+project's `package.json` (`build:content` script inserted into the `build`
+chain + `yaml`/`marked` devDependencies).
+
+Idempotent like `port`: a page already carrying the render marker is left
+alone — its content is gone from the HTML, so there's nothing left to
+re-lift even with `--force`; a page whose `src/content/<page>.yml` already
+exists is skipped unless `--force`. Re-running after hand-restoring a
+page's HTML from git (clearing the marker) re-lifts it from scratch with
+`--force`.
+
+**`/admin` needs an auth relay before it can save anything to GitHub** —
+`cms` intentionally doesn't scaffold one (v1 is docs-only here). See
+`docs/cms.md` in the scaffolded project for the two documented options
+(a `sveltia-cms-auth` Cloudflare Worker, or a Firebase Function OAuth
+relay) plus the personal-access-token shortcut if you're the only editor.
+
 ## What it scaffolds
 
 ```
@@ -249,14 +297,26 @@ from step 1+2 landing locally.
     firebase-hosting-merge.yml   # only when --github-repo + --firebase-project set
   src/
     html/   # pages + Sass-style `_*.html` partials → compiled to public/
+             #   <!-- @render:sections --> marker replaces lifted <main>
+             #   content once `cms` has processed a page
     less/   # → public/assets/css/   (includes _w2f-*.less mirror dumps,
             #                         plus opt-in _embed-consent / _lightbox)
     js/     # → public/assets/js/    (includes opt-in email-hider /
             #                         embed-consent / lightbox modules)
     gfx/    # graphics — deployable images committed, design sources
             # (PSD/AFD/etc.) sit alongside but are stripped by .gitignore
+    content/            # per-page section YAML lifted by `cms` — the
+                        # content the admin panel + render-content.mjs read
   public/
-    assets/{css,js,gfx,fonts}/
+    assets/{css,js,gfx,fonts,files}/  # files/ = CMS media_folder (client
+                                      # uploads + cms-copied images)
+    admin/
+      index.html        # Sveltia CMS shell (writeIfMissing)
+      config.yml         # pages content model (`cms` appends new pages)
+  scripts/
+    render-content.mjs   # build step: src/content/*.yml → public/<page>.html
+  docs/
+    cms.md               # auth wiring, "saving is publishing", how to add a page
   reference/
     WeeblyExport/       # the original theme, moved out of src/
     <domain>/           # wget mirror of the live site (gitignored)
@@ -382,6 +442,14 @@ cache to `<target>/.weebly-migrate.json` and are offered as defaults next time.
   Forms scaffold (`functions/`) lands on first form detection; subsequent
   ports skip existing files and check before mutating `firebase.json` /
   `package.json`.
+- **cms** — a page carrying the `<!-- @render:sections -->` marker is never
+  re-lifted (its content is gone from the HTML, `--force` can't bring it
+  back); `src/content/<page>.yml` is skipped once it exists, unless
+  `--force`. Scaffold files (`public/admin/index.html`, `docs/cms.md`,
+  `scripts/render-content.mjs`) are `writeIfMissing`; `public/admin/config.yml`
+  only ever gets new page entries appended (existing entries and hand edits
+  untouched); `package.json`'s `build:content` script + `yaml`/`marked`
+  devDependencies are added once and left alone after.
 
 ## Prerequisites
 
@@ -417,16 +485,22 @@ cache to `<target>/.weebly-migrate.json` and are offered as defaults next time.
 ```
 cli.mjs                  entry point (bin → weebly-to-firebase, w2f)
 commands/
-  init.mjs               scaffold + orchestrate firebase/convert/crawl/git
+  init.mjs               scaffold + orchestrate firebase/convert/crawl/port/cms/git
   convert.mjs            WeeblyExport assets → src/
   crawl.mjs              wget --mirror of the live site
   port.mjs               extract sections from crawled HTML → src/html/ + public/assets/img/
+  cms.mjs                scaffold Sveltia CMS layer + lift page content → src/content/*.yml
 lib/
   args.mjs               parseArgs wrapper + help text
   prompt.mjs             readline wrapper (ask / askYesNo / askValid)
   target.mjs             resolve project root from --target / cwd
   templates.mjs          file generators for the scaffolded project
   firebase.mjs           `firebase` CLI driver for --setup-firebase
+  fs-utils.mjs           shared `exists()` helper
+  extract.mjs            regex HTML-extraction toolkit shared by port + cms
+  html-markdown.mjs      zero-dep HTML → markdown converter (cms)
+  cms-templates.mjs      cms scaffold file generators (admin shell, config.yml, render-content.mjs, docs/cms.md)
+test/                    node:test unit + fixture-driven command tests
 ```
 
 ## Contributing

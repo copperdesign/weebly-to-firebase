@@ -39,6 +39,8 @@ import {
   W2F_STUBS_NAME,
 } from '../lib/less.mjs';
 import { composeAppImports, APP_JS_MARKER } from '../lib/js.mjs';
+import { extractTag, extractByIdOrClass, extractElement, tryEach, isSkeleton, isRendered } from '../lib/extract.mjs';
+import { exists } from '../lib/fs-utils.mjs';
 import { writeSkeletonHtml } from './convert.mjs';
 import {
   detectForms,
@@ -57,84 +59,10 @@ let chromeSkipped = 0;
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Extraction helpers
- * Regex-based. Each helper returns the inner HTML of the matched element,
- * or null when nothing matched. Multiple fallback patterns per section keep
- * the lossiness manageable across slightly different Weebly markup variants.
+ * extractTag/extractByIdOrClass/extractElement/tryEach/isSkeleton now live in
+ * lib/extract.mjs (shared with `cms`). The page/nav/footer/main selectors
+ * below are port-specific and stay here.
  * ────────────────────────────────────────────────────────────────────────── */
-
-/** Inner HTML of the first `<tag …>…</tag>` block. */
-function extractTag(html, tag) {
-  const re = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
-  const m = html.match(re);
-  return m ? m[1] : null;
-}
-
-/**
- * Inner HTML of the first element matching `id="<name>"` or
- * `class="… <name> …"`. Walks tag depth to find the balancing close — naive
- * but handles nested same-tag siblings well enough for the markup we see.
- */
-function extractByIdOrClass(html, name) {
-  const openRe = new RegExp(
-    `<(\\w+)\\b[^>]*(?:id=["']${name}["']|class=["'][^"']*\\b${name}\\b[^"']*["'])[^>]*>`,
-    'i',
-  );
-  const start = html.match(openRe);
-  if (!start) return null;
-  const tag = start[1];
-  const openAll = new RegExp(`<${tag}\\b[^>]*>`, 'gi');
-  const closeAll = new RegExp(`<\\/${tag}>`, 'gi');
-  const contentStart = start.index + start[0].length;
-  openAll.lastIndex = contentStart;
-  closeAll.lastIndex = contentStart;
-  let depth = 1;
-  let cursor = contentStart;
-  while (depth > 0) {
-    openAll.lastIndex = cursor;
-    closeAll.lastIndex = cursor;
-    const nextOpen = openAll.exec(html);
-    const nextClose = closeAll.exec(html);
-    if (!nextClose) return null;
-    if (nextOpen && nextOpen.index < nextClose.index) {
-      depth++;
-      cursor = nextOpen.index + nextOpen[0].length;
-    } else {
-      depth--;
-      cursor = nextClose.index + nextClose[0].length;
-      if (depth === 0) return html.slice(contentStart, nextClose.index);
-    }
-  }
-  return null;
-}
-
-/**
- * Like extractByIdOrClass, but returns the full `<tag class="name">…</tag>`
- * including the wrapping element. Necessary when the surrounding stylesheet
- * scopes rules to that class — e.g. Weebly's theme defines
- * `.banner-wrap .container { max-width: 1366px; padding: 60px 40px; }`,
- * so capturing the *inner* HTML of `.banner-wrap` and dropping it raw into
- * `<main>` loses the `.container` constraint entirely.
- */
-function extractElement(html, name) {
-  const inner = extractByIdOrClass(html, name);
-  if (inner === null) return null;
-  const openRe = new RegExp(
-    `<(\\w+)\\b[^>]*(?:id=["']${name}["']|class=["'][^"']*\\b${name}\\b[^"']*["'])[^>]*>`,
-    'i',
-  );
-  const m = html.match(openRe);
-  if (!m) return null;
-  return `${m[0]}${inner}</${m[1]}>`;
-}
-
-/** Try several selectors in order; first hit wins. */
-function tryEach(html, attempts) {
-  for (const fn of attempts) {
-    const out = fn(html);
-    if (out && out.trim()) return out;
-  }
-  return null;
-}
 
 function extractHead(html) {
   return extractTag(html, 'head');
@@ -411,10 +339,6 @@ function basenameFromUrl(rawUrl) {
     name = name.replace(/[\s.]+$/, '');
     return name || null;
   } catch { return null; }
-}
-
-async function exists(p) {
-  try { await fs.access(p); return true; } catch { return false; }
 }
 
 async function downloadOne(url, destDir) {
@@ -1095,11 +1019,6 @@ ${faces.join('\n\n')}
  * File-writing helpers
  * ────────────────────────────────────────────────────────────────────────── */
 
-/** A skeleton is detected by the TODO marker the converter writes. */
-function isSkeleton(content) {
-  return /<!--\s*TODO:\s*port (?:from|content from)/i.test(content);
-}
-
 async function writePartial(root, name, body, force) {
   const dest = path.join(root, 'src/html', `${name}.html`);
   if (await exists(dest) && !force) {
@@ -1118,7 +1037,9 @@ async function writePartial(root, name, body, force) {
  * For pages: replace just the `<main>…</main>` body. Leaves the surrounding
  * include composition intact so hand-edits to page structure survive.
  */
-async function writePageMain(root, page, mainHtml, force) {
+// Exported for the test suite — the cms-lifted-page guard below is a
+// data-loss protection that deserves direct regression coverage.
+export async function writePageMain(root, page, mainHtml, force) {
   const dest = path.join(root, 'src/html', `${page}.html`);
   const skeleton = await exists(dest) ? await fs.readFile(dest, 'utf8') : null;
   if (!skeleton) {
@@ -1140,6 +1061,15 @@ async function writePageMain(root, page, mainHtml, force) {
     return;
   }
   const currentMain = mainMatch[1];
+  // A cms-lifted page is protected even from --force: its content lives in
+  // src/content/<page>.yml now, and re-porting the <main> would destroy the
+  // @render:sections marker — silently orphaning the YAML and every /admin
+  // edit the client makes from then on. Un-lift deliberately instead
+  // (restore the page from git and delete the yml) before re-porting.
+  if (isRendered(currentMain)) {
+    console.log(`  skip src/html/${page}.html main (cms-lifted; content lives in src/content/${page}.yml — un-lift before re-porting)`);
+    return;
+  }
   if (!isSkeleton(currentMain) && !force) {
     console.log(`  skip src/html/${page}.html main (hand-edited; use --force)`);
     return;

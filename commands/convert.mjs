@@ -29,6 +29,7 @@ import { askYesNo } from '../lib/prompt.mjs';
 import { resolveTarget } from '../lib/target.mjs';
 import { composeMainImports } from '../lib/less.mjs';
 import { composeAppImports } from '../lib/js.mjs';
+import { exists } from '../lib/fs-utils.mjs';
 
 /**
  * Standard page set. Partials use the Sass-convention `_` prefix so the
@@ -37,10 +38,6 @@ import { composeAppImports } from '../lib/js.mjs';
  */
 const PAGES = ['index', '404', 'impressum', 'datenschutz', 'kontakt'];
 const PARTIALS = ['_meta', '_nav', '_footer', '_gdpr'];
-
-async function exists(p) {
-  try { await fs.access(p); return true; } catch { return false; }
-}
 
 async function ensureDir(p) {
   await fs.mkdir(p, { recursive: true });

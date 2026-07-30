@@ -26,12 +26,10 @@ import { reusableModuleFiles } from '../lib/scaffold-modules.mjs';
 import { run as runConvert } from './convert.mjs';
 import { run as runCrawl } from './crawl.mjs';
 import { run as runPort } from './port.mjs';
+import { run as runCms } from './cms.mjs';
 import { setupFirebaseProject } from '../lib/firebase.mjs';
 import { normalizeDomain } from '../lib/domain.mjs';
-
-async function exists(p) {
-  try { await fs.access(p); return true; } catch { return false; }
-}
+import { exists } from '../lib/fs-utils.mjs';
 
 async function readJson(p, fallback = {}) {
   if (!(await exists(p))) return fallback;
@@ -168,6 +166,7 @@ function printSummary(cfg, flags) {
     console.log(`  ${n++}. Overlay WeeblyExport theme           (only if reference/WeeblyExport/ has content)`);
   }
   if (!flags.skipGit) console.log(`  ${n++}. git init + initial commit`);
+  if (!flags.skipCms) console.log(`  ${n++}. Scaffold Sveltia CMS layer + lift page content into src/content/${flags.skipGit ? '' : ' (own commit)'}`);
 }
 
 async function scaffoldConfigFiles(root, cfg) {
@@ -401,9 +400,35 @@ export async function run(flags = {}) {
     }
   }
 
+  // Initial commit BEFORE the cms lift — deliberately. The lift is lossy
+  // (markup flattened to markdown), and its own recovery path for the
+  // marker-present dead end is "restore the page HTML from git": that
+  // instruction only works if a commit containing the un-lifted ported
+  // pages actually exists. The lift then lands as its own second commit.
   if (!flags.skipGit) {
     await initGit(root, cfg);
-    // A supplied repo name is the opt-in — create it and push the scaffold.
+  }
+
+  // — CMS scaffold + content lift —
+  //
+  // Non-fatal, same as port above: cms depends on port having actually
+  // produced real page content, and degrades gracefully (every page skips
+  // as still-skeleton; config.yml defers until the first real lift) when
+  // port failed or was skipped.
+  if (!flags.skipCms) {
+    console.log('\nScaffolding Sveltia CMS layer:');
+    try {
+      await runCms(subFlags, []);
+      if (!flags.skipGit && await exists(path.join(root, '.git'))) {
+        await runCmd('git', ['add', '.'], root);
+        await runCmd('git', ['commit', '-m', 'CMS lift (w2f cms)'], root);
+      }
+    } catch (err) { console.log(`\n  !  cms failed: ${err.message}`); }
+  }
+
+  if (!flags.skipGit) {
+    // A supplied repo name is the opt-in — create it and push the scaffold
+    // (both commits: initial ported state + the CMS lift).
     if (cfg.githubRepo) await setupGithubRepo(root, cfg);
   }
   printNextSteps(root, cfg, { firebaseWired });

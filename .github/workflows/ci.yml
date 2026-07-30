@@ -1,10 +1,13 @@
-# Smoke-test the CLI on every push / PR.
+# Smoke-test + unit/e2e-test the CLI on every push / PR.
 #
 # The converter has zero npm dependencies (Node built-ins + wget), so there
-# is nothing to `npm install` — the test is whether the CLI boots, parses
-# argv, and prints help for every subcommand without throwing. Catches the
-# usual drive-by regressions: missing export, broken import, accidentally
-# top-level `await` in a module that's loaded just to print help, etc.
+# is nothing to `npm install` for the smoke steps — those just check whether
+# the CLI boots, parses argv, and prints help for every subcommand without
+# throwing. Catches the usual drive-by regressions: missing export, broken
+# import, accidentally top-level `await` in a module that's loaded just to
+# print help, etc. The `node --test` step (bare, so it auto-discovers test/)
+# runs the real unit + fixture-driven command tests, including the
+# round-trip check that installs `yaml`/`marked` into a temp scaffold.
 #
 # Matrix covers the LTS line declared in package.json (`engines.node: >=18`).
 
@@ -40,7 +43,7 @@ jobs:
 
       - name: per-command help
         run: |
-          for cmd in init convert crawl port forms; do
+          for cmd in init convert crawl port forms cms; do
             echo "::group::help $cmd"
             node cli.mjs help "$cmd"
             echo "::endgroup::"
@@ -56,3 +59,9 @@ jobs:
             echo "expected exit 2 for unknown flag, got $rc" >&2
             exit 1
           fi
+
+      - name: unit + fixture tests
+        # Bare `node --test` (no `test/` argument) — passing the directory
+        # explicitly breaks auto-discovery on newer Node; the bare form
+        # walks the tree and finds test/**/*.test.mjs on its own.
+        run: node --test
