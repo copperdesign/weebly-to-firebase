@@ -263,22 +263,21 @@ test('cms — scaffold files are writeIfMissing (re-run does not clobber hand ed
   assert.equal(await readText(docsPath), '# hand-edited\n');
 });
 
-test('cms — package.json gains build:content + chain insert + yaml/marked devDeps, exactly once', async () => {
+test('cms — package.json build:html gains the render step + yaml/marked devDeps, exactly once', async () => {
   const tmp = await freshFixture();
   const { run } = await import('../commands/cms.mjs');
   await run({ target: tmp, yes: true }, []);
   await run({ target: tmp, yes: true }, []); // second run must not duplicate anything
 
   const pkg = JSON.parse(await readText(path.join(tmp, 'package.json')));
-  assert.equal(pkg.scripts['build:content'], 'node scripts/render-content.mjs');
 
-  const buildChain = pkg.scripts.build;
-  const htmlIdx = buildChain.indexOf('build:html');
-  const contentIdx = buildChain.indexOf('build:content');
-  assert.ok(htmlIdx !== -1, 'build:html still present in the chain');
-  assert.ok(contentIdx !== -1, 'build:content inserted into the chain');
-  assert.ok(contentIdx > htmlIdx, 'build:content runs after build:html');
-  assert.equal(buildChain.split('build:content').length - 1, 1, 'chain entry not duplicated across runs');
+  // Reference-implementation shape: the renderer runs INSIDE build:html,
+  // right after posthtml — no separate build:content script.
+  const buildHtml = pkg.scripts['build:html'];
+  assert.match(buildHtml, /posthtml[\s\S]*&& node scripts\/render-content\.mjs/);
+  assert.equal(buildHtml.split('render-content.mjs').length - 1, 1, 'render step not duplicated across runs');
+  assert.equal(pkg.scripts['build:content'], undefined, 'no separate build:content script');
+  assert.match(pkg.scripts.build, /build:html/);
 
   assert.ok(pkg.devDependencies.yaml, 'yaml devDependency added');
   assert.ok(pkg.devDependencies.marked, 'marked devDependency added');

@@ -375,7 +375,11 @@ export async function run(flags = {}, positionals = []) {
   }
 
   console.log('\nScaffolding CMS:');
-  await writeIfMissing(root, 'public/admin/index.html', adminIndexHtml());
+  // Cached init answers feed the scaffold: `name` titles the admin shell,
+  // `githubRepo` fills the config backend. Both degrade to generic when the
+  // cache is absent (standalone run on an older scaffold).
+  const cached = await readJson(path.join(root, '.weebly-migrate.json'));
+  await writeIfMissing(root, 'public/admin/index.html', adminIndexHtml({ siteName: cached.name }));
   await writeIfMissing(root, 'scripts/render-content.mjs', renderContentMjs());
   await writeIfMissing(root, 'docs/cms.md', cmsDocsMd());
 
@@ -387,7 +391,6 @@ export async function run(flags = {}, positionals = []) {
   const configPath = path.join(root, 'public/admin/config.yml');
   if (!(await exists(configPath))) {
     if (processedPages.length) {
-      const cached = await readJson(path.join(root, '.weebly-migrate.json'));
       await fs.mkdir(path.dirname(configPath), { recursive: true });
       await fs.writeFile(configPath, configYml(processedPages, { githubRepo: cached.githubRepo }));
       console.log('  +    public/admin/config.yml');
@@ -422,12 +425,12 @@ export async function run(flags = {}, positionals = []) {
     const { pkg, changed } = applyCmsToPackageJson(pkgRaw);
     if (changed) {
       await fs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
-      console.log('  +    package.json (build:content script + yaml/marked devDeps)');
+      console.log('  +    package.json (render step in build:html + yaml/marked devDeps)');
     } else {
       console.log('  ok   package.json (already wired)');
     }
-    if (!(pkg.scripts.build || '').includes('npm run build:content')) {
-      console.log('  !  package.json "build" script has no `npm run build:html` to insert after — add `npm run build:content` to the chain by hand');
+    if (!(pkg.scripts?.['build:html'] || '').includes('render-content.mjs')) {
+      console.log('  !  package.json has no "build:html" script to extend — append `&& node scripts/render-content.mjs` to your HTML build step by hand');
     }
   } else {
     console.log('  !  package.json missing — run init first');

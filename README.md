@@ -241,6 +241,10 @@ from step 1+2 landing locally.
 
 ### `cms` options
 
+The CMS layer is built on [Sveltia CMS](https://github.com/sveltia/sveltia-cms)
+(docs: [sveltiacms.app](https://sveltiacms.app/)) — a lightweight, git-backed
+CMS loaded from a single pinned script; saving in `/admin` is a git commit.
+
 | flag | meaning |
 | --- | --- |
 | `--force`   | Re-lift a page's content where still possible, and re-render scaffold files even if unchanged |
@@ -266,8 +270,8 @@ Once per run, `cms` also scaffolds `public/admin/index.html` (the Sveltia
 shell), `public/admin/config.yml` (the pages content model — every
 processed page gets an entry under a shared `&page_fields` schema),
 `scripts/render-content.mjs`, `docs/cms.md`, and wires the scaffolded
-project's `package.json` (`build:content` script inserted into the `build`
-chain + `yaml`/`marked` devDependencies).
+project's `package.json` (`&& node scripts/render-content.mjs` appended to
+`build:html`, plus `yaml`/`marked` devDependencies).
 
 Idempotent like `port`: a page already carrying the render marker is left
 alone — its content is gone from the HTML, so there's nothing left to
@@ -279,8 +283,9 @@ page's HTML from git (clearing the marker) re-lifts it from scratch with
 **`/admin` needs an auth relay before it can save anything to GitHub** —
 `cms` intentionally doesn't scaffold one (v1 is docs-only here). See
 `docs/cms.md` in the scaffolded project for the two documented options
-(a `sveltia-cms-auth` Cloudflare Worker, or a Firebase Function OAuth
-relay) plus the personal-access-token shortcut if you're the only editor.
+(the official [sveltia-cms-auth](https://github.com/sveltia/sveltia-cms-auth)
+Cloudflare Worker, or a Firebase Function OAuth relay) plus the
+personal-access-token shortcut if you're the only editor.
 
 ## What it scaffolds
 
@@ -448,7 +453,7 @@ cache to `<target>/.weebly-migrate.json` and are offered as defaults next time.
   `--force`. Scaffold files (`public/admin/index.html`, `docs/cms.md`,
   `scripts/render-content.mjs`) are `writeIfMissing`; `public/admin/config.yml`
   only ever gets new page entries appended (existing entries and hand edits
-  untouched); `package.json`'s `build:content` script + `yaml`/`marked`
+  untouched); `package.json`'s `build:html` render step + `yaml`/`marked`
   devDependencies are added once and left alone after.
 
 ## Prerequisites
