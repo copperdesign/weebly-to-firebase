@@ -193,14 +193,19 @@ async function scaffoldConfigFiles(root, cfg) {
 }
 
 /**
- * Drop the reusable JS/LESS modules every Weebly migration tends to need
- * (email-hider, embed-consent, lightbox). The files land unused — neither
- * `app.js` nor `main.less` imports them — so they cost nothing until the
- * user wires one up. See lib/scaffold-modules.mjs for rationale.
+ * Drop the reusable front-end modules a Weebly migration tends to need: the
+ * `cookie-consent.md` pointer (embed consent lives in the
+ * `@copperdesign/easy-cookie-consent` package) and the dependency-free
+ * lightbox. The files land unused — neither `app.js` nor `main.less`
+ * imports them — so they cost nothing until the user wires one up.
+ *
+ * The demoted `email-hider` module is scaffolded only with
+ * `--with-email-hider`. See lib/scaffold-modules.mjs for rationale.
  */
-async function scaffoldReusableModules(root) {
+async function scaffoldReusableModules(root, flags) {
   console.log('\nScaffolding reusable modules (opt-in — see each @docs sibling):');
-  for (const [relPath, content] of Object.entries(reusableModuleFiles())) {
+  const files = reusableModuleFiles({ emailHider: !!flags.withEmailHider });
+  for (const [relPath, content] of Object.entries(files)) {
     await writeIfMissing(root, relPath, content);
   }
 }
@@ -342,7 +347,7 @@ export async function run(flags = {}) {
 
   await scaffoldConfigFiles(root, cfg);
   await scaffoldDirectories(root);
-  await scaffoldReusableModules(root);
+  await scaffoldReusableModules(root, flags);
   await fs.writeFile(configFile, JSON.stringify(cfg, null, 2) + '\n');
   console.log(`\n  +    .weebly-migrate.json (cache for re-runs)`);
 

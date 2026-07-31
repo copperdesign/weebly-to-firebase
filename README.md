@@ -305,9 +305,9 @@ personal-access-token shortcut if you're the only editor.
              #   <!-- @render:sections --> marker replaces lifted <main>
              #   content once `cms` has processed a page
     less/   # → public/assets/css/   (includes _w2f-*.less mirror dumps,
-            #                         plus opt-in _embed-consent / _lightbox)
-    js/     # → public/assets/js/    (includes opt-in email-hider /
-            #                         embed-consent / lightbox modules)
+            #                         plus the opt-in _lightbox partial)
+    js/     # → public/assets/js/    (includes the opt-in lightbox module +
+            #                         cookie-consent.md wiring pointer)
     gfx/    # graphics — deployable images committed, design sources
             # (PSD/AFD/etc.) sit alongside but are stripped by .gitignore
     content/            # per-page section YAML lifted by `cms` — the
@@ -329,20 +329,34 @@ personal-access-token shortcut if you're the only editor.
 
 ## Reusable modules (opt-in)
 
-Three modules every Weebly migration tends to need land in `src/` from
+A couple of things every Weebly migration tends to need land in `src/` from
 `init`. They're scaffolded *unused* — neither `app.js` nor `main.less`
 imports them — so they cost nothing until you wire one up. Each ships with
 an `@docs` MD sibling explaining the HTML contract and wiring.
 
 | Module                              | Replaces                                   | Why scaffolded |
 | ----------------------------------- | ------------------------------------------ | -------------- |
-| `src/js/email-hider.js`             | Cloudflare `__cf_email__` runtime          | Weebly mailto links break on first deploy; Firebase Hosting has no equivalent edge decoder. |
-| `src/js/embed-consent.js` + LESS    | Weebly's "single global OK" cookie banner  | GDPR-conformant click-to-load gate for YouTube / SoundCloud / Google Maps. Iframe stays out of the DOM until consent. |
-| `src/js/lightbox.js` + LESS         | Fancybox + jQuery                          | Same `rel="lightbox[group]"` HTML hook the Weebly theme used; chrome deny-list also strips the Fancybox sprite assets at port time. |
+| `src/js/cookie-consent.md`          | Weebly's "single global OK" cookie banner  | Pointer, not code — third-party embed consent is handled by the standalone [`@copperdesign/easy-cookie-consent`](https://github.com/copperdesign/easy-cookie-consent) package (click-to-load gate; iframe stays out of the DOM until consent; i18n EN/DE, optional global modal, MIT, ~6 KB, zero-dep). The doc carries the install + wiring recipe. |
+| `src/js/lightbox.js` + LESS         | Fancybox + jQuery                          | Dependency-free (no jQuery) drop-in on the *same* `rel="lightbox[group]"` HTML hook the Weebly theme used, so existing gallery markup works untouched. The chrome deny-list strips the Fancybox sprite assets at port time; this fills the gap. |
 
-To wire one up, add `import "./<module>.js"` in `src/js/app.js` and (where
-relevant) `@import "_<module>.less"` in `src/less/main.less`. See each
-sibling `.md` for the full HTML contract.
+To wire the lightbox up, add `import "./lightbox.js"` in `src/js/app.js`
+and `@import "_lightbox.less"` in `src/less/main.less`. See the sibling
+`.md` for the full HTML contract. For embed consent, follow
+`cookie-consent.md`.
+
+### Demoted: `email-hider` (opt-in via `--with-email-hider`)
+
+Earlier scaffolds shipped an `email-hider.js` that obfuscated `mailto:`
+links at runtime. It's **no longer scaffolded by default** — on-page
+obscurity hurts legibility, accessibility, and copy/paste, and spam
+resistance belongs at the MX layer (SPF/DKIM/DMARC, provider filtering),
+not the markup. Prefer plain, visible email addresses.
+
+It's still available for one narrow case: a crawl of a Cloudflare-fronted
+Weebly site carries over `data-cfemail`-obfuscated links that render broken
+on Firebase. Pass `w2f init --with-email-hider` to scaffold the recovery
+module (the cleaner fix is to decode those to plain addresses at port time
+and skip it). See `src/js/email-hider.md` once scaffolded.
 
 ## CI / deploys
 
