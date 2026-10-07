@@ -302,6 +302,32 @@ function stripCacheBuster(url) {
   return String(url).split(/[?#]/)[0];
 }
 
+/**
+ * Turn a reference found in the wget mirror back into the live URL it came
+ * from. `crawl` runs wget with --convert-links and --adjust-extension, so
+ * mirror HTML references *on-disk* names, not live URLs:
+ *   - relative paths (`uploads/…/photo.jpg`), not absolute ones
+ *   - the cache-buster `?` escaped as `%3F` (`photo.jpg%3F1773743280`)
+ *   - a `.css`/`.html` suffix appended after the query
+ *     (`files/main_style.css%3F1791190467.css`)
+ * Fetching those as-is fails: a relative URL can't be fetched at all
+ * (every <img> in <main> was silently skipped), and Weebly 404s the
+ * suffixed stylesheet name (so the theme CSS was never dumped). Absolute
+ * CDN URLs pass through unchanged. Throws on an unparseable ref, like
+ * `new URL` — callers already guard for that.
+ */
+export function liveUrlFromMirrorRef(ref, baseUrl) {
+  let url = String(ref);
+  const escapedQuery = url.search(/%3F/i);
+  if (!url.includes('?') && escapedQuery !== -1) {
+    url = `${url.slice(0, escapedQuery)}?${url.slice(escapedQuery + 3)}`;
+    // Only an appended extension *after* the query is wget's — a real
+    // `.css` in the path sits before the `?` and is never touched.
+    url = url.replace(/(\?[^#]*?)\.(?:css|html)$/i, (_, query) => query);
+  }
+  return new URL(url, baseUrl).href;
+}
+
 function isLocalishUrl(u) {
   return !u || u.startsWith('data:') || u.startsWith('#') || u.startsWith('mailto:') || u.startsWith('tel:');
 }
@@ -375,7 +401,7 @@ async function downloadOne(url, destDir) {
  * return the rewritten HTML. URLs we can't fetch are left untouched so the
  * user sees them in the source and can address them by hand.
  */
-async function rewriteAndDownloadAssets(html, gfxDir) {
+async function rewriteAndDownloadAssets(html, gfxDir, baseUrl) {
   const downloads = new Map(); // cleaned URL → local filename
   // raw-as-captured → cleaned, so the rewrite phase can look up the same
   // key. Necessary because inline-style URLs come in entity-encoded
@@ -399,7 +425,9 @@ async function rewriteAndDownloadAssets(html, gfxDir) {
 
   // 2. Download each unique URL.
   for (const url of downloads.keys()) {
-    const local = await downloadOne(url, gfxDir);
+    let liveUrl;
+    try { liveUrl = liveUrlFromMirrorRef(url, baseUrl); } catch { continue; }
+    const local = await downloadOne(liveUrl, gfxDir);
     if (local) downloads.set(url, local);
   }
   const ok = [...downloads.entries()].filter(([, v]) => v).length;
@@ -866,7 +894,7 @@ async function portMirrorStyles(root, headHtml, baseUrl, gfxDir, force) {
   const seenNames = new Set();
   for (const link of links) {
     let absLink;
-    try { absLink = new URL(link, baseUrl).href; } catch { continue; }
+    try { absLink = liveUrlFromMirrorRef(link, baseUrl); } catch { continue; }
     // Skip whole Weebly chrome stylesheets (fancybox, social-icons, commerce,
     // videojs, select2). These wrap features no migrated site uses — dumping
     // them just produces `_w2f-fancybox.less` etc. that the user deletes
@@ -986,7 +1014,7 @@ async function portFonts(root, headHtml, baseUrl, force) {
   const faces = [];
   for (const link of links) {
     let absLink;
-    try { absLink = new URL(link, baseUrl).href; } catch { continue; }
+    try { absLink = liveUrlFromMirrorRef(link, baseUrl); } catch { continue; }
     console.log(`  · ${absLink}`);
     const css = await fetchText(absLink);
     if (!css) continue;
@@ -1188,7 +1216,7 @@ async function portSetupFromIndex(root, html, baseUrl, gfxDir, force, formStats)
 
     console.log('\n→ _meta.html');
     const filtered = filterMetaHead(head);
-    const withAssets = await rewriteAndDownloadAssets(filtered, gfxDir);
+    const withAssets = await rewriteAndDownloadAssets(filtered, gfxDir, baseUrl);
     await writePartial(root, '_meta', withAssets, force);
   } else {
     console.log('  !  no <head> found in source');
@@ -1199,7 +1227,7 @@ async function portSetupFromIndex(root, html, baseUrl, gfxDir, force, formStats)
     console.log('\n→ _nav.html');
     const filtered = promoteActiveIdToClass(filterBodyChunk(nav));
     const withForms = applyFormsToBody(filtered, formStats, '_nav.html');
-    const withAssets = await rewriteAndDownloadAssets(withForms, gfxDir);
+    const withAssets = await rewriteAndDownloadAssets(withForms, gfxDir, baseUrl);
     await writePartial(root, '_nav', withAssets, force);
   } else {
     console.log('  !  no header/nav block found');
@@ -1210,7 +1238,7 @@ async function portSetupFromIndex(root, html, baseUrl, gfxDir, force, formStats)
     console.log('\n→ _footer.html');
     const filtered = filterBodyChunk(footer);
     const withForms = applyFormsToBody(filtered, formStats, '_footer.html');
-    const withAssets = await rewriteAndDownloadAssets(withForms, gfxDir);
+    const withAssets = await rewriteAndDownloadAssets(withForms, gfxDir, baseUrl);
     await writePartial(root, '_footer', withAssets, force);
   } else {
     console.log('  !  no <footer> block found');
@@ -1237,8 +1265,8 @@ async function portSetupFromIndex(root, html, baseUrl, gfxDir, force, formStats)
  * Cheap to repeat — downloadOne short-circuits on existing files, so this
  * is effectively a no-op on re-runs.
  */
-async function sweepPageAssets(html, gfxDir) {
-  await rewriteAndDownloadAssets(html, gfxDir);
+async function sweepPageAssets(html, gfxDir, baseUrl) {
+  await rewriteAndDownloadAssets(html, gfxDir, baseUrl);
 }
 
 /**
@@ -1282,11 +1310,11 @@ async function portBodyClass(root, page, sourceHtml) {
   console.log(`  +    src/html/${page}.html (body class)`);
 }
 
-async function portPageMain(root, domain, page, html, gfxDir, force, formStats) {
+async function portPageMain(root, domain, page, html, gfxDir, baseUrl, force, formStats) {
   // Page-wide asset sweep before extraction — catches the hero/header
   // section that lives between nav and <main> and wouldn't otherwise make
   // it into any partial. See sweepPageAssets for why we need this.
-  await sweepPageAssets(html, gfxDir);
+  await sweepPageAssets(html, gfxDir, baseUrl);
   const main = extractMain(html);
   if (!main) {
     console.log(`  !  no <main> / content block found for ${page}`);
@@ -1301,7 +1329,7 @@ async function portPageMain(root, domain, page, html, gfxDir, force, formStats) 
   console.log(`\n→ ${page}.html (main slot)`);
   const filtered = filterBodyChunk(main);
   const withForms = applyFormsToBody(filtered, formStats, `${page}.html`);
-  const withAssets = await rewriteAndDownloadAssets(withForms, gfxDir);
+  const withAssets = await rewriteAndDownloadAssets(withForms, gfxDir, baseUrl);
   await writePageMain(root, page, withAssets, force);
   // Body class governs the theme cascade (nav fade, sticky/scroll modes,
   // light/dark palette). Has to land after the page exists on disk.
@@ -1389,7 +1417,7 @@ export async function run(flags = {}, positionals = []) {
       continue;
     }
     const html = page === setupPage ? setupHtml : await fs.readFile(sourcePath, 'utf8');
-    await portPageMain(root, domain, page, html, gfxDir, force, formStats);
+    await portPageMain(root, domain, page, html, gfxDir, baseUrl, force, formStats);
   }
 
   // — Forms handler scaffold —

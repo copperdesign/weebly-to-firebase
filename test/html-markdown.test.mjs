@@ -141,3 +141,29 @@ test('stray close tag in a text run passes through raw instead of being stripped
   assert.equal(unconvertible, true);
   assert.match(markdown, /<\/div>/);
 });
+
+// Regression (kalabalindy.com, 2026-10-07): indented Weebly markup with blank
+// lines between elements was passed through verbatim, and marked rendered
+// every 4+-space-indented line after a blank line as an escaped code block —
+// the page showed its own HTML source as text.
+test('raw passthrough is flattened into one CommonMark HTML block', () => {
+  const html = [
+    '<table class="wsite-multicol-table">',
+    '        <tr>',
+    '',
+    '          <td><div class="paragraph">Hej</div></td>',
+    '        </tr>',
+    '</table>',
+  ].join('\n');
+  const { markdown, unconvertible } = htmlToMarkdown(html);
+  assert.equal(unconvertible, true);
+  assert.doesNotMatch(markdown, /^\s*$/m, 'no blank line may end the HTML block early');
+  assert.doesNotMatch(markdown, /^ {4}/m, 'no line may read as an indented code block');
+  assert.match(markdown, /<td><div class="paragraph">Hej<\/div><\/td>/);
+});
+
+test('raw passthrough keeps <pre> content byte-for-byte', () => {
+  const html = '<table><tr><td>\n<pre>\n    indented code\n</pre>\n</td></tr></table>';
+  const { markdown } = htmlToMarkdown(html);
+  assert.match(markdown, /\n {4}indented code\n/);
+});
