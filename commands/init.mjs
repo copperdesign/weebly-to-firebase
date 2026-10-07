@@ -291,29 +291,33 @@ async function setupGithubRepo(root, cfg) {
  */
 async function wireFirebaseProject(root, cfg) {
   console.log('\n→ Installing dependencies + selecting project\n');
+  const wired = { installed: false, selected: false };
   try {
     console.log('  +    npm install…');
     const npmCode = await runCmd('npm', ['install'], root);
     if (npmCode !== 0) console.log(`  !    npm install exited ${npmCode}.`);
+    wired.installed = npmCode === 0;
     console.log(`  +    firebase use ${cfg.firebaseProject}…`);
     const useCode = await runCmd('firebase', ['use', cfg.firebaseProject], root);
     if (useCode !== 0) console.log(`  !    firebase use exited ${useCode}.`);
+    wired.selected = useCode === 0;
   } catch (err) {
     console.log(`  !  setup step failed to launch: ${err.message}`);
   }
+  return wired;
 }
 
-function printNextSteps(root, cfg, { firebaseWired = false } = {}) {
+function printNextSteps(root, cfg, wired = { installed: false, selected: false }) {
   console.log('\nNext steps:');
   console.log(`  cd "${root}"`);
-  // When firebase setup ran, deps are installed and the project is selected —
-  // don't re-list those as if they're still pending.
-  if (!firebaseWired) {
-    console.log('  npm install');
-    console.log(`  firebase use ${cfg.firebaseProject}`);
-  }
+  // Only drop a step that actually succeeded — a failed install hidden
+  // here is exactly how a fresh scaffold ends up dying on its first build.
+  if (!wired.installed) console.log('  npm install');
+  if (!wired.selected) console.log(`  firebase use ${cfg.firebaseProject}`);
+  // build before dev: the emulators serve public/, which only holds the
+  // lifted pages' content once render-content.mjs has run.
+  console.log('  npm run build        # html (posthtml + cms render) + less + js → public/');
   console.log('  npm run dev          # firebase emulators');
-  console.log('  npm run build        # less + js → public/');
   console.log('  npm run deploy       # firebase hosting');
   if (cfg.liveDomain) {
     console.log('\nRefresh the live-site mirror or re-port any time:');
@@ -358,14 +362,13 @@ export async function run(flags = {}) {
   const subFlags = { ...flags, target: root, yes: true };
 
   // Firebase project + hosting site, opt-in. Failures are non-fatal — the
-  // user can still finish setup by hand from the scaffolded .firebaserc. On
-  // success, wire it up (npm install + firebase use) so the next move is
-  // `npm run dev` rather than a checklist.
-  let firebaseWired = false;
-  if (cfg.setupFirebase && await setupFirebaseProject(cfg)) {
-    await wireFirebaseProject(root, cfg);
-    firebaseWired = true;
-  }
+  // user can still finish setup by hand from the scaffolded .firebaserc.
+  // Wiring (npm install + firebase use) is deferred to the end of the
+  // pipeline: port and cms both still mutate package.json (functions/
+  // scripts, yaml/marked devDeps), and an install run here would leave
+  // node_modules missing whatever they add — `npm run build` then dies on
+  // `Cannot find package 'marked'` from render-content.mjs.
+  const firebaseCreated = cfg.setupFirebase && await setupFirebaseProject(cfg);
 
   // — Live site (primary): crawl → port-all —
   //
@@ -436,5 +439,8 @@ export async function run(flags = {}) {
     // (both commits: initial ported state + the CMS lift).
     if (cfg.githubRepo) await setupGithubRepo(root, cfg);
   }
-  printNextSteps(root, cfg, { firebaseWired });
+
+  // Last, so the install sees the final package.json (see note above).
+  const wired = firebaseCreated ? await wireFirebaseProject(root, cfg) : undefined;
+  printNextSteps(root, cfg, wired);
 }
