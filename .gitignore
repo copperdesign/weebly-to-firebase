@@ -19,3 +19,4 @@ node_modules/
 # Pipeline artifacts (spec/plan docs) — working papers, not part of the repo.
 dev/specs/
 dev/plans/
+.gstack/
